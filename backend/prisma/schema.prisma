@@ -93,6 +93,11 @@ enum InstallmentStatus {
   CANCELED // Parcela cancelada / desconsiderada
 }
 
+enum LoanPaymentStatus {
+  CONFIRMED // Pagamento ativo e confirmado
+  CANCELED // Pagamento estornado / cancelado
+}
+
 enum ClosingStatus {
   OFFICIAL // Fechamento ativo e vigente
   SUPERSEDED // Substituído por uma reabertura posterior
@@ -387,7 +392,8 @@ model Expense {
 
 model Loan {
   id                 String     @id @default(uuid())
-  description        String // Credor / Instituição do empréstimo
+  lenderName         String // Credor / Instituição do empréstimo
+  description        String? // Finalidade / descrição do empréstimo
   principalAmount    Decimal    @db.Decimal(12, 2) // Valor bruto originalmente recebido
   totalPayable       Decimal    @db.Decimal(12, 2) // Total contratado a pagar (principal + juros)
   remainingPrincipal Decimal    @db.Decimal(12, 2) // Saldo devedor do principal restante
@@ -428,22 +434,26 @@ model LoanInstallment {
 }
 
 model LoanPayment {
-  id                String        @id @default(uuid())
-  loanId            String
-  loanInstallmentId String? // Parcela amortizada (opcional)
-  amountPaid        Decimal       @db.Decimal(12, 2) // Desembolso total no caixa
-  principalPaid     Decimal       @default(0) @db.Decimal(12, 2) // Abate no remainingPrincipal
-  interestPaid      Decimal       @default(0) @db.Decimal(12, 2) // Juros (despesa financeira)
-  paymentDate       DateTime      @default(now())
-  paymentMethod     PaymentMethod @default(PIX)
-  notes             String?
-  createdAt         DateTime      @default(now())
+  id                 String            @id @default(uuid())
+  loanId             String
+  loanInstallmentId  String? // Parcela amortizada (opcional)
+  amountPaid         Decimal           @db.Decimal(12, 2) // Desembolso total no caixa
+  principalPaid      Decimal           @default(0) @db.Decimal(12, 2) // Abate no remainingPrincipal
+  interestPaid       Decimal           @default(0) @db.Decimal(12, 2) // Juros (despesa financeira)
+  paymentDate        DateTime          @default(now())
+  paymentMethod      PaymentMethod     @default(PIX)
+  status             LoanPaymentStatus @default(CONFIRMED)
+  cancellationReason String? // Motivo do estorno/cancelamento
+  canceledAt         DateTime? // Data/hora do estorno
+  notes              String?
+  createdAt          DateTime          @default(now())
 
   loan        Loan             @relation(fields: [loanId], references: [id], onDelete: Restrict)
   installment LoanInstallment? @relation(fields: [loanInstallmentId], references: [id], onDelete: Restrict)
 
   @@index([loanId])
   @@index([paymentDate])
+  @@index([status])
   @@map("loan_payments")
 }
 

@@ -7,6 +7,7 @@ import { ExpensesModule } from './expenses/expenses.module';
 import { FinancialCategoriesModule } from './financial-categories/financial-categories.module';
 import { IncomesModule } from './incomes/incomes.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { LoansModule } from './loans/loans.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { PurchasesModule } from './purchases/purchases.module';
@@ -28,6 +29,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     FinancialCategoriesModule,
     IncomesModule,
     ExpensesModule,
+    LoansModule,
   ],
   controllers: [AppController],
   providers: [AppService],
