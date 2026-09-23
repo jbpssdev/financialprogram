@@ -1,0 +1,20 @@
+{
+  "name": "financial-program",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Financial Program - Angular + NestJS Monorepo",
+  "scripts": {
+    "dev": "concurrently -n \"BACKEND,FRONTEND\" -c \"blue,magenta\" \"npm run start:dev --prefix backend\" \"npm run start --prefix frontend\"",
+    "dev:backend": "npm run start:dev --prefix backend",
+    "dev:frontend": "npm run start --prefix frontend",
+    "build": "npm run build --prefix backend && npm run build --prefix frontend",
+    "build:backend": "npm run build --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "docker:db": "docker compose up -d",
+    "docker:db:down": "docker compose down",
+    "prisma:generate": "npm run prisma:generate --prefix backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
