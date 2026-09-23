@@ -3,6 +3,9 @@ import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CategoriesModule } from './categories/categories.module';
+import { ExpensesModule } from './expenses/expenses.module';
+import { FinancialCategoriesModule } from './financial-categories/financial-categories.module';
+import { IncomesModule } from './incomes/incomes.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
@@ -22,6 +25,9 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     PurchasesModule,
     InventoryModule,
     SalesModule,
+    FinancialCategoriesModule,
+    IncomesModule,
+    ExpensesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
