@@ -1,10 +1,496 @@
-// Prisma schema file for FinancialProgram Backend
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
 
 generator client {
   provider = "prisma-client-js"
 }
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+// ==========================================
+// ENUMS DE PRODUTOS E ESTOQUE
+// ==========================================
+
+enum ItemType {
+  PRODUCT_STOCK // Produto com estoque físico (cerveja, lanches, frango)
+  TOKEN_QUANTITY // Item controlado por quantidade (fichas de fliperama)
+  SERVICE // Serviço ou receita sem estoque (entrada de show, cover)
+}
+
+enum UnitOfMeasure {
+  UNIT // Unidade (un)
+  KG // Quilograma (kg) - 0.001 = 1 grama
+  LITER // Litro (L) - 0.001 = 1 ml
+  PACK // Pacote (pct)
+  BOX // Caixa (cx)
+  TOKEN // Ficha
+}
+
+enum StockMovementType {
+  INITIAL_BALANCE // Saldo de implantação / estoque inicial do negócio
+  PURCHASE // Entrada por compra de mercadoria
+  PURCHASE_RETURN // Estorno de compra cancelada (devolução ao fornecedor)
+  SALE // Saída por venda
+  SALE_RETURN // Estorno de venda cancelada (retorno ao estoque)
+  ADJUSTMENT_POSITIVE // Ajuste manual positivo (inventário / sobra apurada)
+  ADJUSTMENT_NEGATIVE // Ajuste manual negativo (falta apurada em contagem)
+  LOSS // Perda comprovada (vencimento, estrago, quebra)
+  INTERNAL_CONSUMPTION // Consumo interno / cortesia do estabelecimento
+}
+
+// ==========================================
+// ENUMS FINANCEIROS E DE TRANSAÇÃO
+// ==========================================
+
+enum PurchaseStatus {
+  PENDING // Compra registrada, aguardando quitação financeira
+  PARTIALLY_PAID // Compra com pagamento parcial efetuado
+  PAID // Compra quitada integralmente
+  CANCELED // Compra cancelada (com estorno controlado de estoque)
+}
+
+enum SaleStatus {
+  COMPLETED // Venda realizada com sucesso
+  CANCELED // Venda cancelada (com retorno do estoque)
+}
+
+enum PaymentMethod {
+  CASH
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+enum FinancialType {
+  INCOME // Receita financeira avulsa
+  EXPENSE // Despesa
+}
+
+enum FinancialScope {
+  BUSINESS // Despesa/receita operacional do estabelecimento
+  PERSONAL // Retirada/despesa pessoal do proprietário
+}
+
+enum FinancialStatus {
+  PENDING // Previsto / a pagar / a receber
+  PAID // Realizado / quitado
+  CANCELED // Cancelado
+}
+
+enum LoanStatus {
+  ACTIVE // Empréstimo em andamento
+  PAID // Empréstimo totalmente quitado
+  RENEGOTIATED // Empréstimo renegociado / refinanciado
+}
+
+enum InstallmentStatus {
+  PENDING // Parcela pendente (atraso é derivado: dueDate < hoje)
+  PARTIALLY_PAID // Parcela com pagamento parcial
+  PAID // Parcela integralmente paga
+  CANCELED // Parcela cancelada / desconsiderada
+}
+
+enum ClosingStatus {
+  OFFICIAL // Fechamento ativo e vigente
+  SUPERSEDED // Substituído por uma reabertura posterior
+}
+
+// ==========================================
+// CADASTRO DE PRODUTOS E CATEGORIAS
+// ==========================================
+
+model Category {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Supplier {
+  id          String   @id @default(uuid())
+  name        String
+  contactName String?
+  phone       String?
+  email       String?
+  notes       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  purchases Purchase[]
+
+  @@map("suppliers")
+}
+
+model Product {
+  id            String        @id @default(uuid())
+  categoryId    String
+  name          String
+  description   String?
+  type          ItemType      @default(PRODUCT_STOCK)
+  unitOfMeasure UnitOfMeasure @default(UNIT)
+
+  // Preço de venda atual
+  currentPrice Decimal @db.Decimal(12, 2)
+
+  // Custo Médio Ponderado (CMP) atual (cache sincronizado)
+  averageCost Decimal @default(0) @db.Decimal(14, 4)
+
+  // Saldo de estoque físico atual (cache sincronizado)
+  currentStock Decimal @default(0) @db.Decimal(12, 3)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category       Category        @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  priceHistory   PriceHistory[]
+  purchaseItems  PurchaseItem[]
+  saleItems      SaleItem[]
+  stockMovements StockMovement[]
+
+  @@index([categoryId])
+  @@index([type])
+  @@index([isActive])
+  @@map("products")
+}
+
+model PriceHistory {
+  id          String   @id @default(uuid())
+  productId   String
+  oldPrice    Decimal  @db.Decimal(12, 2)
+  newPrice    Decimal  @db.Decimal(12, 2)
+  averageCost Decimal  @db.Decimal(14, 4) // Custo no momento da alteração para cálculo de margem histórica
+  changedAt   DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([productId])
+  @@map("price_histories")
+}
+
+// ==========================================
+// COMPRAS, PAGAMENTOS E ESTOQUE
+// ==========================================
+
+model Purchase {
+  id                 String         @id @default(uuid())
+  supplierId         String?
+  purchaseDate       DateTime       @default(now()) // Data efetiva da compra (competência)
+  totalAmount        Decimal        @db.Decimal(12, 2) // Valor total adquirido
+  paidAmount         Decimal        @default(0) @db.Decimal(12, 2) // Total já pago aos fornecedores
+  status             PurchaseStatus @default(PAID)
+  notes              String?
+  cancellationReason String?
+  canceledAt         DateTime?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  supplier Supplier?         @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items    PurchaseItem[]
+  payments PurchasePayment[]
+
+  @@index([purchaseDate])
+  @@index([status])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id         String   @id @default(uuid())
+  purchaseId String
+  productId  String
+  quantity   Decimal  @db.Decimal(12, 3)
+  unitCost   Decimal  @db.Decimal(14, 4)
+  totalCost  Decimal  @db.Decimal(12, 2)
+  createdAt  DateTime @default(now())
+
+  purchase       Purchase        @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  stockMovements StockMovement[]
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+model PurchasePayment {
+  id            String        @id @default(uuid())
+  purchaseId    String
+  amount        Decimal       @db.Decimal(12, 2) // Valor desembolsado no caixa
+  paymentDate   DateTime      @default(now())
+  paymentMethod PaymentMethod @default(PIX)
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseId])
+  @@index([paymentDate])
+  @@map("purchase_payments")
+}
+
+model StockMovement {
+  id             String            @id @default(uuid())
+  productId      String
+  purchaseItemId String? // Rastreabilidade com a linha da compra
+  saleItemId     String? // Rastreabilidade com a linha da venda
+  type           StockMovementType
+
+  // Semântica estrita:
+  quantity  Decimal @db.Decimal(12, 3) // (+) Entrada, (-) Saída
+  unitCost  Decimal @db.Decimal(14, 4) // Sempre positivo (>= 0)
+  totalCost Decimal @db.Decimal(12, 2) // Sempre positivo (>= 0, abs(quantity) * unitCost)
+
+  // Auditoria do estado imediatamente após o movimento
+  averageCostAfter Decimal @db.Decimal(14, 4) // CMP após a operação
+  balanceAfter     Decimal @db.Decimal(12, 3) // Saldo físico após a operação
+  stockValueAfter  Decimal @db.Decimal(12, 2) // Valor patrimonial após a operação (balanceAfter * averageCostAfter)
+
+  reason       String? // Motivo de ajuste, perda ou consumo
+  movementDate DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  product      Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  purchaseItem PurchaseItem? @relation(fields: [purchaseItemId], references: [id], onDelete: Restrict)
+  saleItem     SaleItem?     @relation(fields: [saleItemId], references: [id], onDelete: Restrict)
+
+  @@index([productId])
+  @@index([movementDate])
+  @@index([type])
+  @@map("stock_movements")
+}
+
+// ==========================================
+// VENDAS (DETALHADA OU CONSOLIDADA)
+// ==========================================
+
+model Sale {
+  id                 String        @id @default(uuid())
+  saleDate           DateTime      @default(now()) // Data efetiva da venda
+  status             SaleStatus    @default(COMPLETED)
+  paymentMethod      PaymentMethod @default(CASH)
+  subtotal           Decimal       @db.Decimal(12, 2)
+  discount           Decimal       @default(0) @db.Decimal(12, 2)
+  totalAmount        Decimal       @db.Decimal(12, 2)
+  notes              String?
+  cancellationReason String?
+  canceledAt         DateTime?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  items SaleItem[]
+
+  @@index([saleDate])
+  @@index([status])
+  @@map("sales")
+}
+
+model SaleItem {
+  id        String  @id @default(uuid())
+  saleId    String
+  productId String
+  quantity  Decimal @db.Decimal(12, 3)
+
+  // Snapshot imutável no instante da venda
+  unitPrice Decimal @db.Decimal(12, 2) // Preço cobrado do cliente
+  subtotal  Decimal @db.Decimal(12, 2) // unitPrice * quantity
+  unitCost  Decimal @db.Decimal(14, 4) // CMP do produto no momento da venda (0 para serviços)
+  totalCost Decimal @db.Decimal(12, 2) // unitCost * quantity (CMV do item)
+
+  createdAt DateTime @default(now())
+
+  sale           Sale            @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  product        Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  stockMovements StockMovement[]
+
+  @@index([saleId])
+  @@index([productId])
+  @@map("sale_items")
+}
+
+// ==========================================
+// CATEGORIAS FINANCEIRAS PADRONIZADAS
+// ==========================================
+
+model FinancialCategory {
+  id        String         @id @default(uuid())
+  name      String // Ex: "Aluguel", "Energia", "Cachê", "Taxas", "Renda Extra"
+  type      FinancialType // INCOME ou EXPENSE
+  scope     FinancialScope @default(BUSINESS) // BUSINESS ou PERSONAL
+  isActive  Boolean        @default(true)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  incomes  Income[]
+  expenses Expense[]
+
+  @@unique([name, type, scope])
+  @@map("financial_categories")
+}
+
+// ==========================================
+// FINANCEIRO: RENDAS E DESPESAS
+// ==========================================
+
+model Income {
+  id                  String          @id @default(uuid())
+  financialCategoryId String
+  description         String
+  amount              Decimal         @db.Decimal(12, 2)
+  status              FinancialStatus @default(PAID)
+  incomeDate          DateTime        @default(now()) // Data do recebimento
+  notes               String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  category FinancialCategory @relation(fields: [financialCategoryId], references: [id], onDelete: Restrict)
+
+  @@index([financialCategoryId])
+  @@index([incomeDate])
+  @@index([status])
+  @@map("incomes")
+}
+
+model Expense {
+  id                  String          @id @default(uuid())
+  financialCategoryId String
+  description         String
+  amount              Decimal         @db.Decimal(12, 2)
+  status              FinancialStatus @default(PAID)
+  dueDate             DateTime? // Data prevista de vencimento
+  paymentDate         DateTime? // Data efetiva do pagamento
+  isRecurring         Boolean         @default(false)
+  notes               String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  category FinancialCategory @relation(fields: [financialCategoryId], references: [id], onDelete: Restrict)
+
+  @@index([financialCategoryId])
+  @@index([paymentDate])
+  @@index([status])
+  @@map("expenses")
+}
+
+// ==========================================
+// EMPRÉSTIMOS E CRONOGRAMA DE PARCELAS
+// ==========================================
+
+model Loan {
+  id                 String     @id @default(uuid())
+  description        String // Credor / Instituição do empréstimo
+  principalAmount    Decimal    @db.Decimal(12, 2) // Valor bruto originalmente recebido
+  totalPayable       Decimal    @db.Decimal(12, 2) // Total contratado a pagar (principal + juros)
+  remainingPrincipal Decimal    @db.Decimal(12, 2) // Saldo devedor do principal restante
+  installments       Int // Quantidade total de parcelas contratadas
+  startDate          DateTime // Data de contratação do empréstimo
+  status             LoanStatus @default(ACTIVE)
+  notes              String?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  installmentsList LoanInstallment[]
+  payments         LoanPayment[]
+
+  @@map("loans")
+}
+
+model LoanInstallment {
+  id                String            @id @default(uuid())
+  loanId            String
+  installmentNumber Int // Número da parcela (ex: 1, 2, 3...)
+  dueDate           DateTime // Vencimento da parcela
+  expectedAmount    Decimal           @db.Decimal(12, 2) // Valor previsto da parcela
+  principalExpected Decimal           @default(0) @db.Decimal(12, 2) // Amortização prevista
+  interestExpected  Decimal           @default(0) @db.Decimal(12, 2) // Juros previstos
+  paidAmount        Decimal           @default(0) @db.Decimal(12, 2) // Valor total já pago desta parcela
+  status            InstallmentStatus @default(PENDING) // PENDING, PARTIALLY_PAID, PAID, CANCELED
+  notes             String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  loan     Loan          @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  payments LoanPayment[]
+
+  @@unique([loanId, installmentNumber])
+  @@index([dueDate])
+  @@index([status])
+  @@map("loan_installments")
+}
+
+model LoanPayment {
+  id                String        @id @default(uuid())
+  loanId            String
+  loanInstallmentId String? // Parcela amortizada (opcional)
+  amountPaid        Decimal       @db.Decimal(12, 2) // Desembolso total no caixa
+  principalPaid     Decimal       @default(0) @db.Decimal(12, 2) // Abate no remainingPrincipal
+  interestPaid      Decimal       @default(0) @db.Decimal(12, 2) // Juros (despesa financeira)
+  paymentDate       DateTime      @default(now())
+  paymentMethod     PaymentMethod @default(PIX)
+  notes             String?
+  createdAt         DateTime      @default(now())
+
+  loan        Loan             @relation(fields: [loanId], references: [id], onDelete: Restrict)
+  installment LoanInstallment? @relation(fields: [loanInstallmentId], references: [id], onDelete: Restrict)
+
+  @@index([loanId])
+  @@index([paymentDate])
+  @@map("loan_payments")
+}
+
+// ==========================================
+// FECHAMENTO MENSAL VERSIONADO (SNAPSHOT)
+// ==========================================
+
+model MonthlyClosing {
+  id             String        @id @default(uuid())
+  referenceMonth String // Formato "YYYY-MM", ex: "2026-09"
+  version        Int           @default(1) // Versão do fechamento (1, 2, 3...)
+  status         ClosingStatus @default(OFFICIAL) // OFFICIAL ou SUPERSEDED
+  isCurrent      Boolean       @default(true) // Indica se é a versão vigente
+  closedAt       DateTime      @default(now())
+  reopenedAt     DateTime?
+  reopenReason   String?
+
+  // --- RESULTADO ECONÔMICO (COMPETÊNCIA - DRE) ---
+  grossRevenue     Decimal @db.Decimal(12, 2) // Faturamento bruto de vendas
+  cogs             Decimal @db.Decimal(12, 2) // Custo das Mercadorias Vendidas (CMV)
+  grossProfit      Decimal @db.Decimal(12, 2) // Lucro Bruto (grossRevenue - cogs)
+  otherIncomes     Decimal @db.Decimal(12, 2) // Rendas extras apuradas
+  businessExpenses Decimal @db.Decimal(12, 2) // Despesas operacionais do estabelecimento
+  operatingResult  Decimal @db.Decimal(12, 2) // Resultado Operacional
+  personalExpenses Decimal @db.Decimal(12, 2) // Retiradas e despesas pessoais
+  netIncome        Decimal @db.Decimal(12, 2) // Resultado líquido contábil final
+
+  // --- FLUXO DE CAIXA REAL (REGIME DE CAIXA - DFC) ---
+  salesCashCollected    Decimal @db.Decimal(12, 2) // Vendas efetivamente recebidas em dinheiro/PIX/cartão
+  otherIncomesCollected Decimal @db.Decimal(12, 2) // Rendas extras efetivamente recebidas
+  loanProceeds          Decimal @db.Decimal(12, 2) // Valores de novos empréstimos que entraram no caixa
+  purchasePayments      Decimal @db.Decimal(12, 2) // Saídas reais para pagamento de compras/fornecedores
+  businessExpensesPaid  Decimal @db.Decimal(12, 2) // Despesas do negócio efetivamente pagas
+  personalExpensesPaid  Decimal @db.Decimal(12, 2) // Despesas pessoais efetivamente pagas
+  loanPaymentsTotal     Decimal @db.Decimal(12, 2) // Total pago em parcelas de empréstimo (principal + juros)
+  netCashFlow           Decimal @db.Decimal(12, 2) // Saldo líquido real do fluxo de caixa no mês
+
+  // --- BALANÇO PATRIMONIAL NO ENCERRAMENTO ---
+  stockValue         Decimal @db.Decimal(12, 2) // Capital em estoque na data do fechamento
+  totalDebtRemaining Decimal @db.Decimal(12, 2) // Saldo devedor total dos empréstimos
+
+  // Snapshot analítico detalhado (resumo em JSON por categoria/produto)
+  summaryJson Json?
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  @@unique([referenceMonth, version])
+  @@index([referenceMonth, isCurrent])
+  @@map("monthly_closings")
 }

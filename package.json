@@ -12,7 +12,10 @@
     "build:frontend": "npm run build --prefix frontend",
     "docker:db": "docker compose up -d",
     "docker:db:down": "docker compose down",
-    "prisma:generate": "npm run prisma:generate --prefix backend"
+    "prisma:generate": "npm run prisma:generate --prefix backend",
+    "prisma:migrate:dev": "npm run prisma:migrate:dev --prefix backend",
+    "prisma:migrate:deploy": "npm run prisma:migrate:deploy --prefix backend",
+    "prisma:status": "npm run prisma:status --prefix backend"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
