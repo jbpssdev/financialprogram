@@ -8,6 +8,7 @@ import { FinancialCategoriesModule } from './financial-categories/financial-cate
 import { IncomesModule } from './incomes/incomes.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { LoansModule } from './loans/loans.module';
+import { MonthlyClosingsModule } from './monthly-closings/monthly-closings.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProductsModule } from './products/products.module';
 import { PurchasesModule } from './purchases/purchases.module';
@@ -30,6 +31,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     IncomesModule,
     ExpensesModule,
     LoansModule,
+    MonthlyClosingsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
