@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ItemType, Prisma, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AllowedAdjustmentType, CreateStockAdjustmentDto } from './dto/create-stock-adjustment.dto';
 import { OpeningBalanceDto } from './dto/opening-balance.dto';
 
 @Injectable()
@@ -77,6 +78,123 @@ export class InventoryService {
       return {
         product: updatedProduct,
         movement,
+      };
+    });
+  }
+
+  async createAdjustment(dto: CreateStockAdjustmentDto) {
+    if (dto.quantity <= 0) {
+      throw new BadRequestException('A quantidade do ajuste deve ser estritamente maior que zero.');
+    }
+
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('O motivo do ajuste é obrigatório.');
+    }
+
+    const allowedTypes = Object.values(AllowedAdjustmentType);
+
+    if (!allowedTypes.includes(dto.type)) {
+      throw new BadRequestException(
+        `Tipo de ajuste inválido. Tipos permitidos: ADJUSTMENT_POSITIVE, ADJUSTMENT_NEGATIVE, LOSS, INTERNAL_CONSUMPTION.`,
+      );
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Row locking to prevent race conditions with sales, purchases, or concurrent adjustments
+      await tx.$queryRaw`SELECT id FROM products WHERE id = ${dto.productId} FOR UPDATE`;
+
+      const product = await tx.product.findUnique({
+        where: { id: dto.productId },
+        include: { category: true },
+      });
+
+      if (!product) {
+        throw new NotFoundException(`Produto com ID "${dto.productId}" não foi encontrado.`);
+      }
+
+      if (product.type === ItemType.SERVICE) {
+        throw new BadRequestException(
+          `Itens do tipo SERVICE não controlam estoque físico e não podem receber ajustes de estoque.`,
+        );
+      }
+
+      if (!product.isActive) {
+        throw new BadRequestException(`O produto "${product.name}" está inativo.`);
+      }
+
+      const currentStock = new Prisma.Decimal(product.currentStock);
+      const averageCost = new Prisma.Decimal(product.averageCost);
+      const qtyInput = new Prisma.Decimal(dto.quantity);
+
+      let movementQty: Prisma.Decimal;
+      let newStock: Prisma.Decimal;
+
+      if (dto.type === AllowedAdjustmentType.ADJUSTMENT_POSITIVE) {
+        movementQty = qtyInput;
+        newStock = currentStock.add(movementQty);
+      } else {
+        // ADJUSTMENT_NEGATIVE, LOSS, INTERNAL_CONSUMPTION
+        if (qtyInput.gt(currentStock)) {
+          throw new BadRequestException(
+            `Estoque insuficiente para a operação. Saldo atual: ${currentStock.toFixed(3)}, Quantidade solicitada: ${qtyInput.toFixed(3)}.`,
+          );
+        }
+        movementQty = qtyInput.negated();
+        newStock = currentStock.sub(qtyInput);
+      }
+
+      // Unit cost is the current weighted average cost (CMP remains unchanged)
+      const unitCost = averageCost;
+      const totalCost = qtyInput.mul(unitCost).toDecimalPlaces(2);
+      const balanceAfter = newStock;
+      const averageCostAfter = averageCost;
+      const stockValueAfter = balanceAfter.mul(averageCostAfter).toDecimalPlaces(2);
+
+      const reasonFormatted = dto.notes?.trim()
+        ? `${dto.reason.trim()} - Obs: ${dto.notes.trim()}`
+        : dto.reason.trim();
+
+      const movement = await tx.stockMovement.create({
+        data: {
+          productId: dto.productId,
+          type: dto.type as unknown as StockMovementType,
+          quantity: movementQty,
+          unitCost,
+          totalCost,
+          averageCostAfter,
+          balanceAfter,
+          stockValueAfter,
+          reason: reasonFormatted,
+          movementDate: new Date(),
+        },
+      });
+
+      const updatedProduct = await tx.product.update({
+        where: { id: dto.productId },
+        data: {
+          currentStock: balanceAfter,
+        },
+        include: {
+          category: true,
+        },
+      });
+
+      return {
+        product: this.calculateProductInventoryMetrics(updatedProduct),
+        movement: {
+          id: movement.id,
+          productId: movement.productId,
+          type: movement.type,
+          quantity: movement.quantity.toFixed(3),
+          unitCost: movement.unitCost.toFixed(4),
+          totalCost: movement.totalCost.toFixed(2),
+          averageCostAfter: movement.averageCostAfter.toFixed(4),
+          balanceAfter: movement.balanceAfter.toFixed(3),
+          stockValueAfter: movement.stockValueAfter.toFixed(2),
+          reason: movement.reason,
+          movementDate: movement.movementDate,
+          createdAt: movement.createdAt,
+        },
       };
     });
   }

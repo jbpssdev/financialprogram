@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { CreateStockAdjustmentDto } from './dto/create-stock-adjustment.dto';
 import { OpeningBalanceDto } from './dto/opening-balance.dto';
 import { InventoryService } from './inventory.service';
 
@@ -9,6 +10,11 @@ export class InventoryController {
   @Post('opening-balance')
   setOpeningBalance(@Body() dto: OpeningBalanceDto) {
     return this.inventoryService.setOpeningBalance(dto);
+  }
+
+  @Post('adjustments')
+  createAdjustment(@Body() dto: CreateStockAdjustmentDto) {
+    return this.inventoryService.createAdjustment(dto);
   }
 
   @Get()
