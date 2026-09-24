@@ -94,7 +94,7 @@ export class AuthService {
   }
 
   async refresh(refreshToken: string): Promise<AuthResponse> {
-    if (!refreshToken || typeof refreshToken !== 'string') {
+    if (!refreshToken || typeof refreshToken !== 'string' || !refreshToken.trim()) {
       throw new UnauthorizedException('Refresh token é obrigatório.');
     }
 
@@ -107,46 +107,46 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token inválido ou expirado.');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-    });
+    return await this.prisma.$transaction(async (tx) => {
+      // Lock pessimista da linha do usuário no PostgreSQL para eliminar race conditions / TOCTOU
+      await tx.$queryRaw`SELECT id FROM users WHERE id = ${payload.sub} FOR UPDATE`;
 
-    if (!user || !user.isActive || !user.refreshTokenHash) {
-      throw new UnauthorizedException('Refresh token inválido.');
-    }
-
-    const isMatch = await this.compareRefreshToken(refreshToken, user.refreshTokenHash);
-    if (!isMatch) {
-      // Invalidação por segurança em caso de token antigo/reutilizado
-      await this.prisma.user.update({
-        where: { id: user.id },
-        data: { refreshTokenHash: null },
+      const user = await tx.user.findUnique({
+        where: { id: payload.sub },
       });
-      throw new UnauthorizedException('Refresh token inválido.');
-    }
 
-    // Rotação: emite novo par e invalida o anterior
-    const newPayload = { sub: user.id, email: user.email };
-    const newAccessToken = this.generateAccessToken(newPayload);
-    const newRefreshToken = this.generateRefreshToken(newPayload);
+      if (!user || !user.isActive || !user.refreshTokenHash) {
+        throw new UnauthorizedException('Refresh token inválido.');
+      }
 
-    const newRefreshTokenHash = await this.hashRefreshToken(newRefreshToken);
+      const isMatch = await this.compareRefreshToken(refreshToken, user.refreshTokenHash);
+      if (!isMatch) {
+        throw new UnauthorizedException('Refresh token inválido.');
+      }
 
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { refreshTokenHash: newRefreshTokenHash },
+      // Rotação: emite novo par e invalida o anterior
+      const newPayload = { sub: user.id, email: user.email };
+      const newAccessToken = this.generateAccessToken(newPayload);
+      const newRefreshToken = this.generateRefreshToken(newPayload);
+
+      const newRefreshTokenHash = await this.hashRefreshToken(newRefreshToken);
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { refreshTokenHash: newRefreshTokenHash },
+      });
+
+      return {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          isActive: user.isActive,
+        },
+      };
     });
-
-    return {
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        isActive: user.isActive,
-      },
-    };
   }
 
   async logout(userId: string): Promise<{ message: string }> {

@@ -38,6 +38,12 @@ describe('AuthService & Auth Security', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    $transaction: jest.fn().mockImplementation((callback) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        user: mockPrismaService.user,
+      }),
+    ),
   };
 
   let tokenCounter = 0;
@@ -65,6 +71,13 @@ describe('AuthService & Auth Security', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+
+    mockPrismaService.$transaction.mockImplementation((callback) =>
+      callback({
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        user: mockPrismaService.user,
+      }),
+    );
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -188,7 +201,7 @@ describe('AuthService & Auth Security', () => {
       );
     });
 
-    it('deve invalidar token no banco e rejeitar se o hash não coincidir (tentativa de reuso)', async () => {
+    it('deve rejeitar se o hash não coincidir (401) sem apagar o hash existente no banco', async () => {
       mockJwtService.verify.mockReturnValue({ sub: mockUser.id, email: mockUser.email });
       mockPrismaService.user.findUnique.mockResolvedValue({
         ...mockUser,
@@ -199,11 +212,8 @@ describe('AuthService & Auth Security', () => {
         new UnauthorizedException('Refresh token inválido.'),
       );
 
-      // Deve ter limpado o refreshTokenHash por segurança
-      expect(mockPrismaService.user.update).toHaveBeenCalledWith({
-        where: { id: mockUser.id },
-        data: { refreshTokenHash: null },
-      });
+      // Não deve ter apagado o refreshTokenHash existente
+      expect(mockPrismaService.user.update).not.toHaveBeenCalled();
     });
 
     it('deve rejeitar se o usuário no banco não possuir refreshTokenHash (já deslogado)', async () => {
@@ -226,6 +236,181 @@ describe('AuthService & Auth Security', () => {
       });
 
       await expect(authService.refresh('valid-token')).rejects.toThrow(
+        new UnauthorizedException('Refresh token inválido.'),
+      );
+    });
+
+    it('deve executar SELECT ... FOR UPDATE sob transação para garantir row-lock pessimista', async () => {
+      const rawRefreshToken = 'valid-refresh-token';
+      const storedHash = await hashRefreshTokenForTest(rawRefreshToken);
+      const queryRawMock = jest.fn().mockResolvedValue([]);
+
+      mockJwtService.verify.mockReturnValue({ sub: mockUser.id, email: mockUser.email });
+      mockPrismaService.$transaction.mockImplementationOnce(async (callback: any) => {
+        return callback({
+          $queryRaw: queryRawMock,
+          user: {
+            findUnique: jest.fn().mockResolvedValue({
+              ...mockUser,
+              refreshTokenHash: storedHash,
+            }),
+            update: jest.fn().mockResolvedValue(mockUser),
+          },
+        });
+      });
+
+      await authService.refresh(rawRefreshToken);
+
+      expect(queryRawMock).toHaveBeenCalled();
+    });
+
+    it('O. Concorrência: se duas requisições tentarem refresh com R1 simultaneamente, B falha com 401 mas R2 da requisição A continua válido', async () => {
+      const r1 = 'initial-token-r1';
+      const r1Hash = await hashRefreshTokenForTest(r1);
+
+      // Simula estado no banco de dados
+      let currentDbHash: string | null = r1Hash;
+
+      mockJwtService.verify.mockImplementation(() => {
+        return { sub: mockUser.id, email: mockUser.email };
+      });
+
+      // Simula $transaction sequencial garantida pelo PostgreSQL FOR UPDATE
+      mockPrismaService.$transaction.mockImplementation(async (callback: any) => {
+        const txPrisma = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          user: {
+            findUnique: jest.fn().mockImplementation(async () => ({
+              ...mockUser,
+              refreshTokenHash: currentDbHash,
+            })),
+            update: jest.fn().mockImplementation(async ({ data }: any) => {
+              currentDbHash = data.refreshTokenHash;
+              return { ...mockUser, refreshTokenHash: currentDbHash };
+            }),
+          },
+        };
+        return callback(txPrisma);
+      });
+
+      // Request A usa R1: sucesso, gera R2
+      const firstRefresh = await authService.refresh(r1);
+      expect(firstRefresh).toHaveProperty('accessToken');
+      expect(firstRefresh).toHaveProperty('refreshToken');
+      const r2 = firstRefresh.refreshToken;
+      expect(r2).not.toBe(r1);
+
+      // Request B (que aguardava o lock) tenta usar o mesmo R1:
+      // Mismatch detectado -> 401!
+      await expect(authService.refresh(r1)).rejects.toThrow(
+        new UnauthorizedException('Refresh token inválido.'),
+      );
+
+      // CRÍTICO: currentDbHash NÃO foi apagado, permanece o hash de R2!
+      expect(currentDbHash).not.toBeNull();
+
+      // Cliente legítimo usando o novo R2: DEVE funcionar e rotacionar para R3!
+      const secondRefresh = await authService.refresh(r2);
+      expect(secondRefresh).toHaveProperty('accessToken');
+      expect(secondRefresh).toHaveProperty('refreshToken');
+      const r3 = secondRefresh.refreshToken;
+      expect(r3).not.toBe(r2);
+
+      // E qualquer replay subsequente de R1 continua rejeitado com 401
+      await expect(authService.refresh(r1)).rejects.toThrow(
+        new UnauthorizedException('Refresh token inválido.'),
+      );
+    });
+
+    it('B. Reuso sequencial do token antigo (replay) é rejeitado com 401 e token novo permanece válido', async () => {
+      const r1 = 'token-r1';
+      let currentDbHash: string | null = await hashRefreshTokenForTest(r1);
+
+      mockJwtService.verify.mockReturnValue({ sub: mockUser.id, email: mockUser.email });
+
+      mockPrismaService.$transaction.mockImplementation(async (callback: any) => {
+        return callback({
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          user: {
+            findUnique: jest.fn().mockImplementation(async () => ({
+              ...mockUser,
+              refreshTokenHash: currentDbHash,
+            })),
+            update: jest.fn().mockImplementation(async ({ data }: any) => {
+              currentDbHash = data.refreshTokenHash;
+              return { ...mockUser, refreshTokenHash: currentDbHash };
+            }),
+          },
+        });
+      });
+
+      // 1. R1 rotaciona para R2
+      const resR1 = await authService.refresh(r1);
+      const r2 = resR1.refreshToken;
+
+      // 2. Cliente ou atacante tenta reutilizar R1
+      await expect(authService.refresh(r1)).rejects.toThrow(
+        new UnauthorizedException('Refresh token inválido.'),
+      );
+
+      // 3. R2 continua válido no banco e rotaciona para R3
+      const resR2 = await authService.refresh(r2);
+      expect(resR2).toHaveProperty('accessToken');
+      expect(resR2).toHaveProperty('refreshToken');
+    });
+
+    it('J. Segundo login deve invalidar o refresh token gerado na sessão anterior', async () => {
+      const tokenSession1 = 'session-1-refresh-token';
+      let dbHash: string | null = await hashRefreshTokenForTest(tokenSession1);
+
+      mockPrismaService.user.findUnique.mockResolvedValue(mockUser);
+      mockPrismaService.user.update.mockImplementation(({ data }: any) => {
+        dbHash = data.refreshTokenHash;
+        return Promise.resolve({ ...mockUser, refreshTokenHash: dbHash });
+      });
+
+      mockPrismaService.$transaction.mockImplementation(async (callback: any) => {
+        return callback({
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          user: {
+            findUnique: jest.fn().mockResolvedValue({ ...mockUser, refreshTokenHash: dbHash }),
+            update: jest.fn().mockImplementation(({ data }: any) => {
+              dbHash = data.refreshTokenHash;
+              return Promise.resolve({ ...mockUser, refreshTokenHash: dbHash });
+            }),
+          },
+        });
+      });
+
+      // Login da Sessão 2 no computador B
+      await authService.login({
+        email: 'admin@empresa.com',
+        password: 'secret123',
+      });
+
+      // Tentativa de refresh pela Sessão 1 (computador A) com token antigo
+      mockJwtService.verify.mockReturnValue({ sub: mockUser.id, email: mockUser.email });
+      await expect(authService.refresh(tokenSession1)).rejects.toThrow(
+        new UnauthorizedException('Refresh token inválido.'),
+      );
+    });
+
+    it('H. Refresh após logout deve ser rejeitado com 401', async () => {
+      mockJwtService.verify.mockReturnValue({ sub: mockUser.id, email: mockUser.email });
+      mockPrismaService.$transaction.mockImplementationOnce(async (callback: any) => {
+        return callback({
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          user: {
+            findUnique: jest.fn().mockResolvedValue({
+              ...mockUser,
+              refreshTokenHash: null, // usuário deslogado
+            }),
+            update: jest.fn(),
+          },
+        });
+      });
+
+      await expect(authService.refresh('token-apos-logout')).rejects.toThrow(
         new UnauthorizedException('Refresh token inválido.'),
       );
     });
