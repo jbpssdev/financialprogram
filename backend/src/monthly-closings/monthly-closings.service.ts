@@ -21,7 +21,7 @@ export class MonthlyClosingsService {
   /**
    * Helper que formata o referenceMonth e calcula o intervalo estrito de datas [startDate, endDate) em UTC.
    */
-  private getDateRange(year: number, month: number) {
+  getDateRange(year: number, month: number) {
     const referenceMonth = `${year}-${String(month).padStart(2, '0')}`;
     const startDate = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
     const nextMonth = month === 12 ? 1 : month + 1;
@@ -522,6 +522,105 @@ export class MonthlyClosingsService {
       referenceMonth,
       official,
       history,
+    };
+  }
+
+  /**
+   * Retorna os números oficiais consolidados (se o mês estiver fechado)
+   * ou calcula o preview em tempo real (se o mês estiver aberto),
+   * garantindo que Dashboard e Fechamento usem rigorosamente a mesma regra.
+   */
+  async getOfficialOrPreview(year: number, month: number) {
+    const { referenceMonth, startDate, endDate } = this.getDateRange(year, month);
+
+    const official = await this.prisma.monthlyClosing.findFirst({
+      where: {
+        referenceMonth,
+        status: ClosingStatus.OFFICIAL,
+        isCurrent: true,
+      },
+    });
+
+    if (official) {
+      const summaryJson = official.summaryJson as any;
+      const loanInterest = summaryJson?.economic?.loanInterestExpense
+        ? new Prisma.Decimal(summaryJson.economic.loanInterestExpense)
+        : new Prisma.Decimal(0);
+      const totalInflows = official.salesCashCollected
+        .plus(official.otherIncomesCollected)
+        .plus(official.loanProceeds);
+      const totalOutflows = official.purchasePayments
+        .plus(official.businessExpensesPaid)
+        .plus(official.personalExpensesPaid)
+        .plus(official.loanPaymentsTotal);
+
+      return {
+        isOfficial: true,
+        referenceMonth,
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString(),
+        closing: {
+          id: official.id,
+          version: official.version,
+          status: official.status,
+          closedAt: official.closedAt,
+        },
+        metrics: {
+          grossRevenue: official.grossRevenue,
+          cogs: official.cogs,
+          grossProfit: official.grossProfit,
+          otherIncomes: official.otherIncomes,
+          businessExpenses: official.businessExpenses,
+          loanInterestExpense: loanInterest,
+          operatingResult: official.operatingResult,
+          personalExpenses: official.personalExpenses,
+          resultAfterPersonalExpenses: official.netIncome,
+          salesCashCollected: official.salesCashCollected,
+          otherIncomesCollected: official.otherIncomesCollected,
+          loanProceeds: official.loanProceeds,
+          purchasePayments: official.purchasePayments,
+          businessExpensesPaid: official.businessExpensesPaid,
+          personalExpensesPaid: official.personalExpensesPaid,
+          loanPaymentsTotal: official.loanPaymentsTotal,
+          totalInflows,
+          totalOutflows,
+          netCashFlow: official.netCashFlow,
+          stockValue: official.stockValue,
+          totalDebtRemaining: official.totalDebtRemaining,
+        },
+      };
+    }
+
+    const preview = await this.calculateMonthlyMetrics(this.prisma, year, month);
+    return {
+      isOfficial: false,
+      referenceMonth,
+      startDate: preview.startDate,
+      endDate: preview.endDate,
+      closing: null,
+      metrics: {
+        grossRevenue: preview.grossRevenue,
+        cogs: preview.cogs,
+        grossProfit: preview.grossProfit,
+        otherIncomes: preview.otherIncomes,
+        businessExpenses: preview.businessExpenses,
+        loanInterestExpense: preview.loanInterestExpense,
+        operatingResult: preview.operatingResult,
+        personalExpenses: preview.personalExpenses,
+        resultAfterPersonalExpenses: preview.netIncome,
+        salesCashCollected: preview.salesCashCollected,
+        otherIncomesCollected: preview.otherIncomesCollected,
+        loanProceeds: preview.loanProceeds,
+        purchasePayments: preview.purchasePayments,
+        businessExpensesPaid: preview.businessExpensesPaid,
+        personalExpensesPaid: preview.personalExpensesPaid,
+        loanPaymentsTotal: preview.loanPaymentsTotal,
+        totalInflows: preview.totalCashInflows,
+        totalOutflows: preview.totalCashOutflows,
+        netCashFlow: preview.netCashFlow,
+        stockValue: preview.stockValue,
+        totalDebtRemaining: preview.totalDebtRemaining,
+      },
     };
   }
 }

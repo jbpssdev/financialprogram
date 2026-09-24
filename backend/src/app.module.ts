@@ -6,6 +6,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { CategoriesModule } from './categories/categories.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { ExpensesModule } from './expenses/expenses.module';
 import { FinancialCategoriesModule } from './financial-categories/financial-categories.module';
 import { IncomesModule } from './incomes/incomes.module';
@@ -25,6 +26,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
     }),
     PrismaModule,
     AuthModule,
+    DashboardModule,
     CategoriesModule,
     ProductsModule,
     SuppliersModule,
