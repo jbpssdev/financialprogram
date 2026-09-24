@@ -1,10 +1,17 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { FinancialScope, FinancialStatus, FinancialType, Prisma } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExpensesService } from './expenses.service';
 
 describe('ExpensesService', () => {
   let service: ExpensesService;
+  let periodLockService: {
+    assertPeriodOpen: jest.Mock;
+    assertAllPeriodsOpen: jest.Mock;
+    lockAndAssertPeriodOpen: jest.Mock;
+    lockAndAssertAllPeriodsOpen: jest.Mock;
+  };
   let prisma: {
     financialCategory: {
       findUnique: jest.Mock;
@@ -15,6 +22,8 @@ describe('ExpensesService', () => {
       findUnique: jest.Mock;
       update: jest.Mock;
     };
+    $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
   };
 
   beforeEach(() => {
@@ -28,9 +37,21 @@ describe('ExpensesService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      $transaction: jest.fn().mockImplementation((callback) => callback(prisma)),
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
 
-    service = new ExpensesService(prisma as unknown as PrismaService);
+    periodLockService = {
+      assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+      assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+      lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+      lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+    };
+
+    service = new ExpensesService(
+      prisma as unknown as PrismaService,
+      periodLockService as unknown as PeriodLockService,
+    );
   });
 
   it('C. should reject creating Expense using an INCOME category', async () => {
@@ -233,5 +254,49 @@ describe('ExpensesService', () => {
     expect(result.summary.totalCanceled).toBe('100.00'); // 100
     expect(result.summary.totalBusiness).toBe('2500.00'); // 2000 + 500 (canceled excluded)
     expect(result.summary.totalPersonal).toBe('1200.00'); // 1200 (paid)
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de despesa com HTTP 422 em mês fechado', async () => {
+      prisma.financialCategory.findUnique.mockResolvedValue({
+        id: 'cat-exp',
+        name: 'Energia',
+        type: FinancialType.EXPENSE,
+        isActive: true,
+      });
+
+      periodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.create({
+          financialCategoryId: 'cat-exp',
+          description: 'Conta de luz em mês fechado',
+          amount: 350,
+          paymentDate: '2026-09-10T12:00:00.000Z',
+          status: FinancialStatus.PAID,
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia alteração/cancelamento de despesa com HTTP 422 em mês fechado', async () => {
+      prisma.expense.findUnique.mockResolvedValue({
+        id: 'exp-locked',
+        paymentDate: new Date('2026-09-05T10:00:00.000Z'),
+        amount: new Prisma.Decimal(400),
+        status: FinancialStatus.PAID,
+      });
+
+      periodLockService.lockAndAssertAllPeriodsOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.update('exp-locked', {
+          status: FinancialStatus.CANCELED,
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
   });
 });

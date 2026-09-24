@@ -1,10 +1,15 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { InstallmentStatus, LoanPaymentStatus, LoanStatus, PaymentMethod, Prisma } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoansService } from './loans.service';
 
 describe('LoansService', () => {
   let service: LoansService;
+  let periodLockService: {
+    assertPeriodOpen: jest.Mock;
+    assertAllPeriodsOpen: jest.Mock;
+  };
   let prisma: {
     loan: {
       create: jest.Mock;
@@ -47,10 +52,25 @@ describe('LoansService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      $transaction: jest.fn(),
+      $transaction: jest.fn().mockImplementation((callback) => {
+        if (typeof callback === 'function') {
+          return callback(prisma);
+        }
+        return callback;
+      }),
     };
 
-    service = new LoansService(prisma as unknown as PrismaService);
+    periodLockService = {
+      assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+      assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+      lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+      lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+    };
+
+    service = new LoansService(
+      prisma as unknown as PrismaService,
+      periodLockService as unknown as PeriodLockService,
+    );
   });
 
   // A. Loan exige lenderName
@@ -643,5 +663,46 @@ describe('LoansService', () => {
     });
 
     expect(result.loan.status).toBe(LoanStatus.RENEGOTIATED);
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de empréstimo com HTTP 422 em mês fechado', async () => {
+      periodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.create({
+          lenderName: 'Banco ABC',
+          principalAmount: 50000,
+          startDate: '2026-09-01T00:00:00.000Z',
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia cancelamento de pagamento de empréstimo com HTTP 422 em mês fechado', async () => {
+      const mockTx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        loan: { findUnique: jest.fn().mockResolvedValue({ id: 'loan-locked' }) },
+        loanPayment: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'pay-locked',
+            loanId: 'loan-locked',
+            paymentDate: new Date('2026-09-10T12:00:00.000Z'),
+            status: LoanPaymentStatus.CONFIRMED,
+          }),
+        },
+      };
+
+      prisma.$transaction.mockImplementation((callback) => callback(mockTx));
+
+      periodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.cancelPayment('loan-locked', 'pay-locked', { reason: 'Tentativa em mês fechado' }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
   });
 });

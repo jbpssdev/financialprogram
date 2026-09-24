@@ -1,10 +1,17 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { FinancialScope, FinancialStatus, FinancialType, Prisma } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { IncomesService } from './incomes.service';
 
 describe('IncomesService', () => {
   let service: IncomesService;
+  let periodLockService: {
+    assertPeriodOpen: jest.Mock;
+    assertAllPeriodsOpen: jest.Mock;
+    lockAndAssertPeriodOpen: jest.Mock;
+    lockAndAssertAllPeriodsOpen: jest.Mock;
+  };
   let prisma: {
     financialCategory: {
       findUnique: jest.Mock;
@@ -15,6 +22,8 @@ describe('IncomesService', () => {
       findUnique: jest.Mock;
       update: jest.Mock;
     };
+    $transaction: jest.Mock;
+    $queryRaw: jest.Mock;
   };
 
   beforeEach(() => {
@@ -23,14 +32,26 @@ describe('IncomesService', () => {
         findUnique: jest.fn(),
       },
       income: {
-        create: jest.Mock = jest.fn(),
-        findMany: jest.Mock = jest.fn(),
-        findUnique: jest.Mock = jest.fn(),
-        update: jest.Mock = jest.fn(),
+        create: (jest.fn() as any),
+        findMany: (jest.fn() as any),
+        findUnique: (jest.fn() as any),
+        update: (jest.fn() as any),
       },
+      $transaction: jest.fn().mockImplementation((callback) => callback(prisma)),
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
 
-    service = new IncomesService(prisma as unknown as PrismaService);
+    periodLockService = {
+      assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+      assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+      lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+      lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+    };
+
+    service = new IncomesService(
+      prisma as unknown as PrismaService,
+      periodLockService as unknown as PeriodLockService,
+    );
   });
 
   it('D. should reject creating Income using an EXPENSE category', async () => {
@@ -201,5 +222,48 @@ describe('IncomesService', () => {
 
     expect(result.description).toBe('Atualizada');
     expect(result.status).toBe(FinancialStatus.PAID);
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de receita com HTTP 422 em mês fechado', async () => {
+      prisma.financialCategory.findUnique.mockResolvedValue({
+        id: 'cat-inc',
+        name: 'Vendas',
+        type: FinancialType.INCOME,
+        isActive: true,
+      });
+
+      periodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.create({
+          financialCategoryId: 'cat-inc',
+          description: 'Receita em mês fechado',
+          amount: 500,
+          incomeDate: '2026-09-10T12:00:00.000Z',
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia alteração/cancelamento de receita com HTTP 422 em mês fechado', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-locked',
+        incomeDate: new Date('2026-09-05T10:00:00.000Z'),
+        amount: new Prisma.Decimal(200),
+        status: FinancialStatus.PAID,
+      });
+
+      periodLockService.lockAndAssertAllPeriodsOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.update('inc-locked', {
+          status: FinancialStatus.CANCELED,
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
   });
 });

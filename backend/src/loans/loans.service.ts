@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InstallmentStatus, LoanPaymentStatus, LoanStatus, PaymentMethod, Prisma } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CancelLoanPaymentDto } from './dto/cancel-loan-payment.dto';
 import { CreateLoanInstallmentDto } from './dto/create-loan-installment.dto';
@@ -11,7 +12,10 @@ import { UpdateLoanDto } from './dto/update-loan.dto';
 
 @Injectable()
 export class LoansService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly periodLockService: PeriodLockService,
+  ) {}
 
   // ==========================================
   // LOANS
@@ -31,18 +35,22 @@ export class LoansService {
 
     const startDate = dto.startDate ? new Date(dto.startDate) : new Date();
 
-    return this.prisma.loan.create({
-      data: {
-        lenderName: dto.lenderName.trim(),
-        description: dto.description?.trim() ?? null,
-        principalAmount,
-        totalPayable,
-        remainingPrincipal: principalAmount,
-        installments: dto.installments ?? 1,
-        startDate,
-        status: LoanStatus.ACTIVE,
-        notes: dto.notes?.trim() ?? null,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, startDate);
+
+      return tx.loan.create({
+        data: {
+          lenderName: dto.lenderName.trim(),
+          description: dto.description?.trim() ?? null,
+          principalAmount,
+          totalPayable,
+          remainingPrincipal: principalAmount,
+          installments: dto.installments ?? 1,
+          startDate,
+          status: LoanStatus.ACTIVE,
+          notes: dto.notes?.trim() ?? null,
+        },
+      });
     });
   }
 
@@ -447,6 +455,8 @@ export class LoansService {
 
       // 1. Create Payment
       const paymentDate = dto.paymentDate ? new Date(dto.paymentDate) : new Date();
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, paymentDate);
+
       const payment = await tx.loanPayment.create({
         data: {
           loanId,
@@ -530,6 +540,8 @@ export class LoansService {
       if (payment.status === LoanPaymentStatus.CANCELED) {
         throw new BadRequestException('Este pagamento já se encontra cancelado.');
       }
+
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, payment.paymentDate);
 
       // 3. Lock Installment if exists
       if (payment.loanInstallmentId) {

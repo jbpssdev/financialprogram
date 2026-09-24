@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ItemType, PaymentMethod, Prisma, PurchasePaymentStatus, PurchaseStatus, StockMovementType } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CancelPurchasePaymentDto } from './dto/cancel-purchase-payment.dto';
 import { CreatePurchasePaymentDto } from './dto/create-purchase-payment.dto';
@@ -11,7 +12,10 @@ import { CreatePurchaseDto } from './dto/create-purchase.dto';
 
 @Injectable()
 export class PurchasesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly periodLockService: PeriodLockService,
+  ) {}
 
   async create(dto: CreatePurchaseDto) {
     if (dto.supplierId) {
@@ -49,8 +53,13 @@ export class PurchasesService {
       }
     }
 
+    const purchaseDate = dto.purchaseDate ? new Date(dto.purchaseDate) : new Date();
+
     return this.prisma.$transaction(async (tx) => {
-      // Lock rows in deterministic order to prevent deadlocks
+      // 1. Transactional advisory lock & period check
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, purchaseDate);
+
+      // 2. Lock rows in deterministic order to prevent deadlocks
       for (const pid of uniqueProductIds) {
         await tx.$queryRaw`SELECT id FROM products WHERE id = ${pid} FOR UPDATE`;
       }
@@ -130,8 +139,6 @@ export class PurchasesService {
           notes: dto.initialPayment.notes?.trim(),
         };
       }
-
-      const purchaseDate = dto.purchaseDate ? new Date(dto.purchaseDate) : new Date();
 
       // Create purchase header
       const purchase = await tx.purchase.create({
@@ -251,6 +258,7 @@ export class PurchasesService {
         : PurchaseStatus.PARTIALLY_PAID;
 
       const paymentDate = dto.paymentDate ? new Date(dto.paymentDate) : new Date();
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, paymentDate);
 
       await tx.purchasePayment.create({
         data: {
@@ -311,6 +319,8 @@ export class PurchasesService {
       if (payment.status === PurchasePaymentStatus.CANCELED) {
         throw new BadRequestException('Este pagamento já foi cancelado anteriormente.');
       }
+
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, payment.paymentDate);
 
       // 3. Mark payment as CANCELED
       await tx.purchasePayment.update({

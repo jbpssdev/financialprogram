@@ -29,4 +29,8 @@ export class CreateStockAdjustmentDto {
   @IsString({ message: 'As observações devem ser um texto válido.' })
   @IsOptional()
   notes?: string;
+
+  @IsString({ message: 'A data do movimento deve ser uma string de data válida.' })
+  @IsOptional()
+  movementDate?: string;
 }

@@ -1,11 +1,19 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ItemType, Prisma, SaleStatus, StockMovementType, UnitOfMeasure } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SalesService } from './sales.service';
 
 describe('SalesService', () => {
   let service: SalesService;
+
+  const mockPeriodLockService = {
+    assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+    assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+    lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+    lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+  };
 
   const mockPrismaService = {
     product: {
@@ -35,6 +43,10 @@ describe('SalesService', () => {
         {
           provide: PrismaService,
           useValue: mockPrismaService,
+        },
+        {
+          provide: PeriodLockService,
+          useValue: mockPeriodLockService,
         },
       ],
     }).compile();
@@ -535,6 +547,62 @@ describe('SalesService', () => {
           reason: 'Motivo',
         }),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de venda com HTTP 422 se o mês estiver fechado', async () => {
+      const mockProduct = {
+        id: 'prod-1',
+        name: 'Cerveja',
+        type: ItemType.PRODUCT_STOCK,
+        unitOfMeasure: UnitOfMeasure.UNIT,
+        isActive: true,
+        currentPrice: new Prisma.Decimal(8),
+        averageCost: new Prisma.Decimal(4),
+        currentStock: new Prisma.Decimal(100),
+      };
+
+      mockPrismaService.product.findMany.mockResolvedValue([mockProduct]);
+      mockPeriodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.create({
+          saleDate: '2026-09-15T10:00:00.000Z',
+          items: [{ productId: 'prod-1', quantity: 2 }],
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia cancelamento de venda com HTTP 422 se o período da venda estiver fechado', async () => {
+      const mockSale = {
+        id: 'sale-locked',
+        saleDate: new Date('2026-09-10T12:00:00.000Z'),
+        status: SaleStatus.COMPLETED,
+        items: [],
+      };
+
+      mockPrismaService.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          sale: {
+            findUnique: jest.fn().mockResolvedValue(mockSale),
+          },
+        };
+        return callback(tx);
+      });
+
+      mockPeriodLockService.lockAndAssertAllPeriodsOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.cancel('sale-locked', {
+          reason: 'Cancelamento em mês fechado',
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
     });
   });
 });

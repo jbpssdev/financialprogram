@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { FinancialScope, FinancialStatus, FinancialType, Prisma } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { QueryExpensesDto } from './dto/query-expenses.dto';
@@ -7,7 +8,10 @@ import { UpdateExpenseDto } from './dto/update-expense.dto';
 
 @Injectable()
 export class ExpensesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly periodLockService: PeriodLockService,
+  ) {}
 
   async create(dto: CreateExpenseDto) {
     if (dto.amount <= 0) {
@@ -46,20 +50,26 @@ export class ExpensesService {
     const dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
     const paymentDate = status === FinancialStatus.PAID && dto.paymentDate ? new Date(dto.paymentDate) : null;
 
-    return this.prisma.expense.create({
-      data: {
-        financialCategoryId: dto.financialCategoryId,
-        description: dto.description.trim(),
-        amount: new Prisma.Decimal(dto.amount),
-        status,
-        dueDate,
-        paymentDate,
-        isRecurring: dto.isRecurring ?? false,
-        notes: dto.notes?.trim() ?? null,
-      },
-      include: {
-        category: true,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      if (status === FinancialStatus.PAID && paymentDate) {
+        await this.periodLockService.lockAndAssertPeriodOpen(tx, paymentDate);
+      }
+
+      return tx.expense.create({
+        data: {
+          financialCategoryId: dto.financialCategoryId,
+          description: dto.description.trim(),
+          amount: new Prisma.Decimal(dto.amount),
+          status,
+          dueDate,
+          paymentDate,
+          isRecurring: dto.isRecurring ?? false,
+          notes: dto.notes?.trim() ?? null,
+        },
+        include: {
+          category: true,
+        },
+      });
     });
   }
 
@@ -159,87 +169,116 @@ export class ExpensesService {
   }
 
   async update(id: string, dto: UpdateExpenseDto) {
-    const existing = await this.findOne(id);
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM expenses WHERE id = ${id} FOR UPDATE`;
 
-    const updateData: Prisma.ExpenseUpdateInput = {};
-
-    if (dto.financialCategoryId) {
-      const category = await this.prisma.financialCategory.findUnique({
-        where: { id: dto.financialCategoryId },
+      const existing = await tx.expense.findUnique({
+        where: { id },
+        include: {
+          category: true,
+        },
       });
 
-      if (!category) {
-        throw new NotFoundException(`Categoria financeira com ID "${dto.financialCategoryId}" não foi encontrada.`);
+      if (!existing) {
+        throw new NotFoundException(`Despesa com ID "${id}" não foi encontrada.`);
       }
 
-      if (category.type !== FinancialType.EXPENSE) {
-        throw new BadRequestException(
-          `A categoria "${category.name}" é do tipo INCOME. Não é permitido associar categoria de receita a uma despesa.`,
-        );
+      const updateData: Prisma.ExpenseUpdateInput = {};
+
+      if (dto.financialCategoryId) {
+        const category = await tx.financialCategory.findUnique({
+          where: { id: dto.financialCategoryId },
+        });
+
+        if (!category) {
+          throw new NotFoundException(`Categoria financeira com ID "${dto.financialCategoryId}" não foi encontrada.`);
+        }
+
+        if (category.type !== FinancialType.EXPENSE) {
+          throw new BadRequestException(
+            `A categoria "${category.name}" é do tipo INCOME. Não é permitido associar categoria de receita a uma despesa.`,
+          );
+        }
+
+        if (!category.isActive) {
+          throw new BadRequestException(`A categoria financeira "${category.name}" está inativa.`);
+        }
+
+        updateData.category = { connect: { id: dto.financialCategoryId } };
       }
 
-      if (!category.isActive) {
-        throw new BadRequestException(`A categoria financeira "${category.name}" está inativa.`);
+      if (dto.description !== undefined) {
+        updateData.description = dto.description.trim();
       }
 
-      updateData.category = { connect: { id: dto.financialCategoryId } };
-    }
-
-    if (dto.description !== undefined) {
-      updateData.description = dto.description.trim();
-    }
-
-    if (dto.amount !== undefined) {
-      if (dto.amount <= 0) {
-        throw new BadRequestException('O valor da despesa deve ser estritamente maior que zero.');
+      if (dto.amount !== undefined) {
+        if (dto.amount <= 0) {
+          throw new BadRequestException('O valor da despesa deve ser estritamente maior que zero.');
+        }
+        updateData.amount = new Prisma.Decimal(dto.amount);
       }
-      updateData.amount = new Prisma.Decimal(dto.amount);
-    }
 
-    if (dto.dueDate !== undefined) {
-      updateData.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
-    }
+      if (dto.dueDate !== undefined) {
+        updateData.dueDate = dto.dueDate ? new Date(dto.dueDate) : null;
+      }
 
-    if (dto.isRecurring !== undefined) {
-      updateData.isRecurring = dto.isRecurring;
-    }
+      if (dto.isRecurring !== undefined) {
+        updateData.isRecurring = dto.isRecurring;
+      }
 
-    if (dto.notes !== undefined) {
-      updateData.notes = dto.notes ? dto.notes.trim() : null;
-    }
+      if (dto.notes !== undefined) {
+        updateData.notes = dto.notes ? dto.notes.trim() : null;
+      }
 
-    // Coherent resolution of status and paymentDate
-    const resultingStatus = dto.status ?? existing.status;
-    let resultingPaymentDate: Date | null;
+      // Coherent resolution of status and paymentDate
+      const resultingStatus = dto.status ?? existing.status;
+      let resultingPaymentDate: Date | null;
 
-    if (dto.paymentDate !== undefined) {
-      resultingPaymentDate = dto.paymentDate ? new Date(dto.paymentDate) : null;
-    } else if (dto.status === FinancialStatus.PENDING) {
-      // Transitioning to PENDING clears payment date
-      resultingPaymentDate = null;
-    } else if (dto.status === FinancialStatus.CANCELED) {
-      resultingPaymentDate = null;
-    } else {
-      resultingPaymentDate = existing.paymentDate;
-    }
+      if (dto.paymentDate !== undefined) {
+        resultingPaymentDate = dto.paymentDate ? new Date(dto.paymentDate) : null;
+      } else if (dto.status === FinancialStatus.PENDING) {
+        // Transitioning to PENDING clears payment date
+        resultingPaymentDate = null;
+      } else if (dto.status === FinancialStatus.CANCELED) {
+        resultingPaymentDate = null;
+      } else {
+        resultingPaymentDate = existing.paymentDate;
+      }
 
-    if (resultingStatus === FinancialStatus.PAID && !resultingPaymentDate) {
-      throw new BadRequestException('Data de pagamento (paymentDate) é obrigatória para despesas com status PAID.');
-    }
+      if (resultingStatus === FinancialStatus.PAID && !resultingPaymentDate) {
+        throw new BadRequestException('Data de pagamento (paymentDate) é obrigatória para despesas com status PAID.');
+      }
 
-    if (resultingStatus === FinancialStatus.PENDING && resultingPaymentDate && dto.paymentDate) {
-      throw new BadRequestException('Despesa com status PENDING não deve ter data de pagamento (paymentDate).');
-    }
+      if (resultingStatus === FinancialStatus.PENDING && resultingPaymentDate && dto.paymentDate) {
+        throw new BadRequestException('Despesa com status PENDING não deve ter data de pagamento (paymentDate).');
+      }
 
-    updateData.status = resultingStatus;
-    updateData.paymentDate = resultingStatus === FinancialStatus.PAID ? resultingPaymentDate : null;
+      // Regra de Period Lock para Expenses:
+      // Apenas pagamentos efetivados (status = PAID) afetam o fechamento mensal (DRE/DFC).
+      // Se a despesa era PAID, o período original deve estar aberto para permitir estorno/alteração.
+      // Se a despesa resultará em PAID, o período de pagamento destino deve estar aberto.
+      const affectedDates: (Date | null)[] = [];
+      if (existing.status === FinancialStatus.PAID && existing.paymentDate) {
+        affectedDates.push(existing.paymentDate);
+      }
+      if (resultingStatus === FinancialStatus.PAID && resultingPaymentDate) {
+        affectedDates.push(resultingPaymentDate);
+      }
 
-    return this.prisma.expense.update({
-      where: { id },
-      data: updateData,
-      include: {
-        category: true,
-      },
+      if (affectedDates.length > 0) {
+        await this.periodLockService.lockAndAssertAllPeriodsOpen(tx, affectedDates);
+      }
+
+      updateData.status = resultingStatus;
+      updateData.paymentDate = resultingStatus === FinancialStatus.PAID ? resultingPaymentDate : null;
+
+      return tx.expense.update({
+        where: { id },
+        data: updateData,
+        include: {
+          category: true,
+        },
+      });
     });
   }
 }

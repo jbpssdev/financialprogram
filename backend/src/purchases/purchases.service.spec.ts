@@ -1,11 +1,19 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnprocessableEntityException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ItemType, PaymentMethod, Prisma, PurchasePaymentStatus, PurchaseStatus } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PurchasesService } from './purchases.service';
 
 describe('PurchasesService', () => {
   let service: PurchasesService;
+
+  const mockPeriodLockService = {
+    assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+    assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+    lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+    lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+  };
 
   const mockPrismaService = {
     supplier: {
@@ -36,6 +44,10 @@ describe('PurchasesService', () => {
         {
           provide: PrismaService,
           useValue: mockPrismaService,
+        },
+        {
+          provide: PeriodLockService,
+          useValue: mockPeriodLockService,
         },
       ],
     }).compile();
@@ -535,6 +547,60 @@ describe('PurchasesService', () => {
 
       // Check row lock was called for purchase and payment
       expect(queryRawMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de compra com HTTP 422 em mês fechado', async () => {
+      mockPeriodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      mockPrismaService.product.findMany.mockResolvedValue([
+        {
+          id: 'prod-1',
+          name: 'Produto Teste',
+          type: ItemType.PRODUCT_STOCK,
+          isActive: true,
+          currentStock: new Prisma.Decimal(10),
+          averageCost: new Prisma.Decimal(5),
+        },
+      ]);
+
+      await expect(
+        service.create({
+          purchaseDate: '2026-09-08T12:00:00.000Z',
+          items: [{ productId: 'prod-1', quantity: 5, unitCost: 10 }],
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia cancelamento de pagamento com HTTP 422 em mês fechado', async () => {
+      const mockPurchase = { id: 'purch-locked', totalAmount: new Prisma.Decimal(100), paidAmount: new Prisma.Decimal(100) };
+      const mockPayment = {
+        id: 'pay-locked',
+        purchaseId: 'purch-locked',
+        amount: new Prisma.Decimal(100),
+        status: PurchasePaymentStatus.CONFIRMED,
+        paymentDate: new Date('2026-09-10T12:00:00.000Z'),
+      };
+
+      mockPrismaService.$transaction.mockImplementation(async (callback: any) => {
+        const tx = {
+          $queryRaw: jest.fn().mockResolvedValue([]),
+          purchase: { findUnique: jest.fn().mockResolvedValue(mockPurchase) },
+          purchasePayment: { findUnique: jest.fn().mockResolvedValue(mockPayment) },
+        };
+        return callback(tx);
+      });
+
+      mockPeriodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.cancelPayment('purch-locked', 'pay-locked', { reason: 'Tentativa em mês fechado' }),
+      ).rejects.toThrow(UnprocessableEntityException);
     });
   });
 });

@@ -1,3 +1,4 @@
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ClosingStatus, FinancialScope, FinancialStatus, LoanPaymentStatus, Prisma, PurchasePaymentStatus, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MonthlyClosingsService } from './monthly-closings.service';
@@ -427,5 +428,134 @@ describe('MonthlyClosingsService', () => {
       }),
     );
     expect(result.purchasePayments.toFixed(2)).toBe('250.00');
+  });
+
+  describe('Reabertura Formal e Versionamento', () => {
+    it('M. deve reabrir fechamento ativo com sucesso, marcando status = SUPERSEDED e isCurrent = false', async () => {
+      const mockClosing = {
+        id: 'closing-1',
+        referenceMonth: '2026-09',
+        status: ClosingStatus.OFFICIAL,
+        isCurrent: true,
+      };
+
+      prisma.monthlyClosing.findUnique.mockResolvedValue(mockClosing);
+
+      const mockTx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        monthlyClosing: {
+          findUnique: jest.fn().mockResolvedValue(mockClosing),
+          update: jest.fn().mockImplementation(({ data }) => ({
+            ...mockClosing,
+            ...data,
+          })),
+        },
+      };
+
+      prisma.$transaction.mockImplementation((callback) => callback(mockTx));
+
+      const result = await service.reopen('closing-1', {
+        reason: 'Correção de despesa lançada incorretamente',
+      });
+
+      expect(result.status).toBe(ClosingStatus.SUPERSEDED);
+      expect(result.isCurrent).toBe(false);
+      expect(result.reopenReason).toBe('Correção de despesa lançada incorretamente');
+      expect(result.reopenedAt).toBeInstanceOf(Date);
+    });
+
+    it('N. deve lançar NotFoundException se o ID do fechamento não existir', async () => {
+      prisma.monthlyClosing.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.reopen('non-existent', { reason: 'Motivo qualquer' }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('O. deve lançar BadRequestException se tentar reabrir fechamento que já não é OFFICIAL ou não é isCurrent', async () => {
+      prisma.monthlyClosing.findUnique.mockResolvedValue({
+        id: 'closing-already-superseded',
+        referenceMonth: '2026-09',
+        status: ClosingStatus.SUPERSEDED,
+        isCurrent: false,
+      });
+
+      await expect(
+        service.reopen('closing-already-superseded', { reason: 'Motivo' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('P. ao fechar novamente um mês reaberto, deve criar novo registro com version incrementada (v2), OFFICIAL e isCurrent', async () => {
+      const existingSuperseded = {
+        id: 'closing-v1',
+        referenceMonth: '2026-09',
+        version: 1,
+        status: ClosingStatus.SUPERSEDED,
+        isCurrent: false,
+      };
+
+      const mockTx = {
+        $executeRaw: jest.fn().mockResolvedValue(1),
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        monthlyClosing: {
+          findFirst: jest.fn().mockImplementation(({ where, orderBy }) => {
+            // First findFirst: checks for existing OFFICIAL -> none
+            if (where?.status === ClosingStatus.OFFICIAL) return Promise.resolve(null);
+            // Second findFirst: gets latest version -> v1
+            if (orderBy?.version === 'desc') return Promise.resolve(existingSuperseded);
+            return Promise.resolve(null);
+          }),
+          create: jest.fn().mockImplementation(({ data }) => Promise.resolve({ id: 'closing-v2', ...data })),
+        },
+        sale: { findMany: jest.fn().mockResolvedValue([]) },
+        income: { findMany: jest.fn().mockResolvedValue([]) },
+        expense: { findMany: jest.fn().mockResolvedValue([]) },
+        loan: { findMany: jest.fn().mockResolvedValue([]) },
+        loanPayment: { findMany: jest.fn().mockResolvedValue([]) },
+        purchasePayment: { findMany: jest.fn().mockResolvedValue([]) },
+        product: { findMany: jest.fn().mockResolvedValue([]) },
+      };
+
+      prisma.$transaction.mockImplementation((callback) => callback(mockTx));
+
+      const newClosing = await service.create({
+        year: 2026,
+        month: 9,
+        notes: 'Refechamento v2',
+      });
+
+      expect(newClosing.version).toBe(2);
+      expect(newClosing.status).toBe(ClosingStatus.OFFICIAL);
+      expect(newClosing.isCurrent).toBe(true);
+    });
+
+    it('Q. findByPeriod deve retornar o fechamento oficial atual e o histórico completo', async () => {
+      const officialClosing = {
+        id: 'closing-v2',
+        referenceMonth: '2026-09',
+        version: 2,
+        status: ClosingStatus.OFFICIAL,
+        isCurrent: true,
+      };
+      const supersededClosing = {
+        id: 'closing-v1',
+        referenceMonth: '2026-09',
+        version: 1,
+        status: ClosingStatus.SUPERSEDED,
+        isCurrent: false,
+      };
+
+      prisma.monthlyClosing.findFirst.mockResolvedValue(officialClosing);
+      prisma.monthlyClosing.findMany.mockResolvedValue([officialClosing, supersededClosing]);
+
+      const result = await service.findByPeriod(2026, 9);
+
+      expect(result.referenceMonth).toBe('2026-09');
+      expect(result.official?.id).toBe('closing-v2');
+      expect(result.history).toHaveLength(2);
+      expect(result.history[0].version).toBe(2);
+      expect(result.history[1].version).toBe(1);
+    });
   });
 });

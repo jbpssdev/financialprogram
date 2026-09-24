@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
   ClosingStatus,
   FinancialScope,
@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateMonthlyClosingDto } from './dto/create-monthly-closing.dto';
 import { PreviewMonthlyClosingDto } from './dto/preview-monthly-closing.dto';
 import { QueryMonthlyClosingDto } from './dto/query-monthly-closing.dto';
+import { ReopenMonthlyClosingDto } from './dto/reopen-monthly-closing.dto';
 
 @Injectable()
 export class MonthlyClosingsService {
@@ -420,6 +421,48 @@ export class MonthlyClosingsService {
           totalDebtRemaining: metrics.totalDebtRemaining,
           summaryJson: metrics.summaryJson,
           notes: dto.notes?.trim() ?? null,
+        },
+      });
+    });
+  }
+
+  // ==========================================
+  // REABERTURA FORMAL DE PERÍODO
+  // ==========================================
+
+  async reopen(id: string, dto: ReopenMonthlyClosingDto) {
+    const existing = await this.prisma.monthlyClosing.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Fechamento mensal com ID "${id}" não foi encontrado.`);
+    }
+
+    if (existing.status !== ClosingStatus.OFFICIAL || !existing.isCurrent) {
+      throw new BadRequestException('Apenas fechamentos oficiais ativos podem ser reabertos.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`monthly_closing:${existing.referenceMonth}`}))`;
+
+      const current = await tx.monthlyClosing.findUnique({
+        where: { id },
+      });
+
+      if (!current || current.status !== ClosingStatus.OFFICIAL || !current.isCurrent) {
+        throw new BadRequestException('Fechamento já foi reaberto ou não está mais ativo.');
+      }
+
+      await tx.$queryRaw`SELECT id FROM monthly_closings WHERE id = ${id} FOR UPDATE`;
+
+      return tx.monthlyClosing.update({
+        where: { id },
+        data: {
+          status: ClosingStatus.SUPERSEDED,
+          isCurrent: false,
+          reopenedAt: new Date(),
+          reopenReason: dto.reason.trim(),
         },
       });
     });

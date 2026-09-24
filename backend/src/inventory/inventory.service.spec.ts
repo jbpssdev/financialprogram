@@ -1,11 +1,19 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, UnprocessableEntityException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ItemType, Prisma, StockMovementType } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { InventoryService } from './inventory.service';
 
 describe('InventoryService', () => {
   let service: InventoryService;
+
+  const mockPeriodLockService = {
+    assertPeriodOpen: jest.fn().mockResolvedValue(undefined),
+    assertAllPeriodsOpen: jest.fn().mockResolvedValue(undefined),
+    lockAndAssertPeriodOpen: jest.fn().mockResolvedValue('2026-09'),
+    lockAndAssertAllPeriodsOpen: jest.fn().mockResolvedValue(['2026-09']),
+  };
 
   const mockPrismaService = {
     product: {
@@ -29,6 +37,10 @@ describe('InventoryService', () => {
         {
           provide: PrismaService,
           useValue: mockPrismaService,
+        },
+        {
+          provide: PeriodLockService,
+          useValue: mockPeriodLockService,
         },
       ],
     }).compile();
@@ -533,6 +545,37 @@ describe('InventoryService', () => {
       });
 
       expect(queryRawMock).toHaveBeenCalled();
+    });
+  });
+
+  describe('Period Lock Enforcement', () => {
+    it('Bloqueia criação de ajuste de estoque com HTTP 422 em mês fechado', async () => {
+      mockPeriodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.createAdjustment({
+          productId: 'prod-1',
+          type: 'ADJUSTMENT_POSITIVE' as any,
+          quantity: 5,
+          reason: 'Ajuste em período fechado',
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('Bloqueia implantação de saldo inicial com HTTP 422 em mês fechado', async () => {
+      mockPeriodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.setOpeningBalance({
+          productId: 'prod-1',
+          quantity: 100,
+          unitCost: 10,
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
     });
   });
 });

@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ItemType, PaymentMethod, Prisma, SaleStatus, StockMovementType } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CancelSaleDto } from './dto/cancel-sale.dto';
 import { CreateSaleDto } from './dto/create-sale.dto';
@@ -11,7 +12,10 @@ import { QuerySalesDto } from './dto/query-sales.dto';
 
 @Injectable()
 export class SalesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly periodLockService: PeriodLockService,
+  ) {}
 
   async create(dto: CreateSaleDto) {
     const uniqueProductIds = [...new Set(dto.items.map((i) => i.productId))].sort();
@@ -30,8 +34,13 @@ export class SalesService {
       }
     }
 
+    const saleDate = dto.saleDate ? new Date(dto.saleDate) : new Date();
+
     return this.prisma.$transaction(async (tx) => {
-      // Deterministic row locking
+      // 1. Transactional advisory lock & period check
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, saleDate);
+
+      // 2. Deterministic row locking
       for (const pid of uniqueProductIds) {
         await tx.$queryRaw`SELECT id FROM products WHERE id = ${pid} FOR UPDATE`;
       }
@@ -111,7 +120,6 @@ export class SalesService {
       }
 
       const totalAmount = subtotal.sub(discount);
-      const saleDate = dto.saleDate ? new Date(dto.saleDate) : new Date();
 
       // Create Sale header
       const sale = await tx.sale.create({
@@ -195,6 +203,9 @@ export class SalesService {
         throw new BadRequestException(`Esta venda já está cancelada.`);
       }
 
+      const canceledDate = new Date();
+      await this.periodLockService.lockAndAssertAllPeriodsOpen(tx, [sale.saleDate, canceledDate]);
+
       const stockItems = sale.items.filter((i) => i.product.type !== ItemType.SERVICE);
       const uniqueProductIds = [...new Set(stockItems.map((i) => i.productId))].sort();
 
@@ -207,8 +218,6 @@ export class SalesService {
         where: { id: { in: uniqueProductIds } },
       });
       const lockedMap = new Map(lockedProducts.map((p) => [p.id, p]));
-
-      const canceledDate = new Date();
 
       for (const item of stockItems) {
         const product = lockedMap.get(item.productId)!;

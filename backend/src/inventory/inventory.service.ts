@@ -5,13 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ItemType, Prisma, StockMovementType } from '@prisma/client';
+import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AllowedAdjustmentType, CreateStockAdjustmentDto } from './dto/create-stock-adjustment.dto';
 import { OpeningBalanceDto } from './dto/opening-balance.dto';
 
 @Injectable()
 export class InventoryService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly periodLockService: PeriodLockService,
+  ) {}
 
   async setOpeningBalance(dto: OpeningBalanceDto) {
     const product = await this.prisma.product.findUnique({
@@ -30,6 +34,9 @@ export class InventoryService {
 
     // Run inside transaction with row-locking
     return this.prisma.$transaction(async (tx) => {
+      // 1. Transactional advisory lock & period check
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, new Date());
+
       // Row locking to avoid concurrency race
       await tx.$queryRaw`SELECT id FROM products WHERE id = ${dto.productId} FOR UPDATE`;
 
@@ -99,8 +106,13 @@ export class InventoryService {
       );
     }
 
+    const movementDate = dto.movementDate ? new Date(dto.movementDate) : new Date();
+
     return this.prisma.$transaction(async (tx) => {
-      // 1. Row locking to prevent race conditions with sales, purchases, or concurrent adjustments
+      // 1. Transactional advisory lock & period check
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, movementDate);
+
+      // 2. Row locking to prevent race conditions with sales, purchases, or concurrent adjustments
       await tx.$queryRaw`SELECT id FROM products WHERE id = ${dto.productId} FOR UPDATE`;
 
       const product = await tx.product.findUnique({
@@ -165,7 +177,7 @@ export class InventoryService {
           balanceAfter,
           stockValueAfter,
           reason: reasonFormatted,
-          movementDate: new Date(),
+          movementDate,
         },
       });
 

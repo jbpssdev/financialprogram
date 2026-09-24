@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, ParseIntPipe, Post, Query } from '@nestjs
 import { CreateMonthlyClosingDto } from './dto/create-monthly-closing.dto';
 import { PreviewMonthlyClosingDto } from './dto/preview-monthly-closing.dto';
 import { QueryMonthlyClosingDto } from './dto/query-monthly-closing.dto';
+import { ReopenMonthlyClosingDto } from './dto/reopen-monthly-closing.dto';
 import { MonthlyClosingsService } from './monthly-closings.service';
 
 @Controller('monthly-closings')
@@ -16,6 +17,11 @@ export class MonthlyClosingsController {
   @Post()
   create(@Body() dto: CreateMonthlyClosingDto) {
     return this.monthlyClosingsService.create(dto);
+  }
+
+  @Post(':id/reopen')
+  reopen(@Param('id') id: string, @Body() dto: ReopenMonthlyClosingDto) {
+    return this.monthlyClosingsService.reopen(id, dto);
   }
 
   @Get()
