@@ -24,6 +24,53 @@ export const routes: Routes = [
         loadComponent: () =>
           import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
       },
+      {
+        path: 'sales',
+        loadComponent: () =>
+          import('./features/sales/sales.component').then((m) => m.SalesComponent),
+      },
+      {
+        path: 'purchases',
+        loadComponent: () =>
+          import('./features/purchases/purchases.component').then((m) => m.PurchasesComponent),
+      },
+      {
+        path: 'inventory',
+        loadComponent: () =>
+          import('./features/inventory/inventory.component').then((m) => m.InventoryComponent),
+      },
+      {
+        path: 'products',
+        loadComponent: () =>
+          import('./features/products/products.component').then((m) => m.ProductsComponent),
+      },
+      {
+        path: 'suppliers',
+        loadComponent: () =>
+          import('./features/suppliers/suppliers.component').then((m) => m.SuppliersComponent),
+      },
+      {
+        path: 'finance/incomes',
+        loadComponent: () =>
+          import('./features/finance/incomes/incomes.component').then((m) => m.IncomesComponent),
+      },
+      {
+        path: 'finance/expenses',
+        loadComponent: () =>
+          import('./features/finance/expenses/expenses.component').then((m) => m.ExpensesComponent),
+      },
+      {
+        path: 'loans',
+        loadComponent: () =>
+          import('./features/loans/loans.component').then((m) => m.LoansComponent),
+      },
+      {
+        path: 'monthly-closing',
+        loadComponent: () =>
+          import('./features/monthly-closing/monthly-closing.component').then(
+            (m) => m.MonthlyClosingComponent,
+          ),
+      },
     ],
   },
   {
