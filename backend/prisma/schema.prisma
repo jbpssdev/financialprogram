@@ -517,3 +517,22 @@ model MonthlyClosing {
   @@index([referenceMonth, isCurrent])
   @@map("monthly_closings")
 }
+
+// ==========================================
+// USUÁRIOS E AUTENTICAÇÃO
+// ==========================================
+
+model User {
+  id               String   @id @default(uuid())
+  name             String
+  email            String   @unique
+  passwordHash     String
+  refreshTokenHash String?
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([email])
+  @@map("users")
+}
+
