@@ -3,8 +3,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { ItemType, PaymentMethod, Prisma, PurchaseStatus, StockMovementType } from '@prisma/client';
+import { ItemType, PaymentMethod, Prisma, PurchasePaymentStatus, PurchaseStatus, StockMovementType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { CancelPurchasePaymentDto } from './dto/cancel-purchase-payment.dto';
 import { CreatePurchasePaymentDto } from './dto/create-purchase-payment.dto';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 
@@ -222,7 +223,19 @@ export class PurchasesService {
         throw new BadRequestException(`Esta compra já está totalmente quitada.`);
       }
 
-      const currentPaid = new Prisma.Decimal(purchase.paidAmount);
+      // Sum only CONFIRMED payments
+      const confirmedPayments = await tx.purchasePayment.findMany({
+        where: {
+          purchaseId,
+          status: PurchasePaymentStatus.CONFIRMED,
+        },
+      });
+
+      let currentPaid = new Prisma.Decimal(0);
+      for (const p of confirmedPayments) {
+        currentPaid = currentPaid.add(p.amount);
+      }
+
       const totalAmount = new Prisma.Decimal(purchase.totalAmount);
       const remainingAmount = totalAmount.sub(currentPaid);
 
@@ -244,10 +257,98 @@ export class PurchasesService {
           purchaseId,
           amount: paymentAmount,
           paymentMethod: dto.paymentMethod || PaymentMethod.PIX,
+          status: PurchasePaymentStatus.CONFIRMED,
           paymentDate,
           notes: dto.notes?.trim(),
         },
       });
+
+      await tx.purchase.update({
+        where: { id: purchaseId },
+        data: {
+          paidAmount: newPaidAmount,
+          status: newStatus,
+        },
+      });
+
+      const purchaseWithDetails = await this.findPurchaseWithDetails(purchaseId, tx);
+      return this.formatPurchaseSummary(purchaseWithDetails);
+    });
+  }
+
+  async cancelPayment(purchaseId: string, paymentId: string, dto: CancelPurchasePaymentDto) {
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('O motivo do cancelamento é obrigatório.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Lock Purchase
+      await tx.$queryRaw`SELECT id FROM purchases WHERE id = ${purchaseId} FOR UPDATE`;
+
+      const purchase = await tx.purchase.findUnique({
+        where: { id: purchaseId },
+      });
+
+      if (!purchase) {
+        throw new NotFoundException(`Compra com ID "${purchaseId}" não foi encontrada.`);
+      }
+
+      // 2. Lock PurchasePayment
+      await tx.$queryRaw`SELECT id FROM purchase_payments WHERE id = ${paymentId} FOR UPDATE`;
+
+      const payment = await tx.purchasePayment.findUnique({
+        where: { id: paymentId },
+      });
+
+      if (!payment) {
+        throw new NotFoundException(`Pagamento com ID "${paymentId}" não foi encontrado.`);
+      }
+
+      if (payment.purchaseId !== purchaseId) {
+        throw new BadRequestException('O pagamento informado não pertence a esta compra.');
+      }
+
+      if (payment.status === PurchasePaymentStatus.CANCELED) {
+        throw new BadRequestException('Este pagamento já foi cancelado anteriormente.');
+      }
+
+      // 3. Mark payment as CANCELED
+      await tx.purchasePayment.update({
+        where: { id: paymentId },
+        data: {
+          status: PurchasePaymentStatus.CANCELED,
+          canceledAt: new Date(),
+          cancellationReason: dto.reason.trim(),
+        },
+      });
+
+      // 4. Recalculate strictly summing CONFIRMED payments
+      const activePayments = await tx.purchasePayment.findMany({
+        where: {
+          purchaseId,
+          status: PurchasePaymentStatus.CONFIRMED,
+        },
+      });
+
+      let newPaidAmount = new Prisma.Decimal(0);
+      for (const p of activePayments) {
+        newPaidAmount = newPaidAmount.add(p.amount);
+      }
+
+      const totalAmount = new Prisma.Decimal(purchase.totalAmount);
+
+      if (newPaidAmount.lt(0) || newPaidAmount.gt(totalAmount)) {
+        throw new BadRequestException('Inconsistência no valor recalculado de pagamentos da compra.');
+      }
+
+      let newStatus: PurchaseStatus;
+      if (newPaidAmount.equals(0)) {
+        newStatus = PurchaseStatus.PENDING;
+      } else if (newPaidAmount.equals(totalAmount)) {
+        newStatus = PurchaseStatus.PAID;
+      } else {
+        newStatus = PurchaseStatus.PARTIALLY_PAID;
+      }
 
       await tx.purchase.update({
         where: { id: purchaseId },
@@ -337,7 +438,7 @@ export class PurchasesService {
       canceledAt: purchase.canceledAt,
       createdAt: purchase.createdAt,
       updatedAt: purchase.updatedAt,
-      items: purchase.items.map((i: any) => ({
+      items: (purchase.items || []).map((i: any) => ({
         id: i.id,
         productId: i.productId,
         productName: i.product?.name,
@@ -346,11 +447,14 @@ export class PurchasesService {
         unitCost: new Prisma.Decimal(i.unitCost).toFixed(4),
         totalCost: new Prisma.Decimal(i.totalCost).toFixed(2),
       })),
-      payments: purchase.payments.map((p: any) => ({
+      payments: (purchase.payments || []).map((p: any) => ({
         id: p.id,
         amount: new Prisma.Decimal(p.amount).toFixed(2),
         paymentDate: p.paymentDate,
         paymentMethod: p.paymentMethod,
+        status: p.status,
+        canceledAt: p.canceledAt,
+        cancellationReason: p.cancellationReason,
         notes: p.notes,
         createdAt: p.createdAt,
       })),

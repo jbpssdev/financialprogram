@@ -1,4 +1,4 @@
-import { ClosingStatus, FinancialScope, FinancialStatus, LoanPaymentStatus, Prisma, SaleStatus } from '@prisma/client';
+import { ClosingStatus, FinancialScope, FinancialStatus, LoanPaymentStatus, Prisma, PurchasePaymentStatus, SaleStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MonthlyClosingsService } from './monthly-closings.service';
 
@@ -402,5 +402,30 @@ describe('MonthlyClosingsService', () => {
 
     expect(result.loanProceeds.toFixed(2)).toBe('0.00');
     expect(result.totalDebtRemaining.toFixed(2)).toBe('3000.00');
+  });
+
+  // Explicit test case I: PurchasePayment CANCELED is ignored by MonthlyClosing
+  it('I. should ignore CANCELED PurchasePayments and query strictly status CONFIRMED in cash flow', async () => {
+    prisma.purchasePayment.findMany.mockImplementation(({ where }) => {
+      // Prisma query must filter status: PurchasePaymentStatus.CONFIRMED
+      if (where.status === PurchasePaymentStatus.CONFIRMED) {
+        return Promise.resolve([{ id: 'pp-conf', amount: new Prisma.Decimal(250) }]);
+      }
+      return Promise.resolve([
+        { id: 'pp-conf', amount: new Prisma.Decimal(250) },
+        { id: 'pp-canc', amount: new Prisma.Decimal(750) },
+      ]);
+    });
+
+    const result = await service.calculateMonthlyMetrics(prisma as unknown as PrismaService, 2026, 9);
+
+    expect(prisma.purchasePayment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: PurchasePaymentStatus.CONFIRMED,
+        }),
+      }),
+    );
+    expect(result.purchasePayments.toFixed(2)).toBe('250.00');
   });
 });

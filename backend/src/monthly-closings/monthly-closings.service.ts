@@ -5,6 +5,7 @@ import {
   FinancialStatus,
   LoanPaymentStatus,
   Prisma,
+  PurchasePaymentStatus,
   SaleStatus,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -177,9 +178,10 @@ export class MonthlyClosingsService {
       loanProceeds = loanProceeds.plus(l.principalAmount);
     }
 
-    // Pagamentos reais efetuados a fornecedores (PurchasePayment)
+    // Pagamentos reais efetuados a fornecedores (apenas PurchasePayment CONFIRMED)
     const purchasePaymentsList = await client.purchasePayment.findMany({
       where: {
+        status: PurchasePaymentStatus.CONFIRMED,
         paymentDate: dateInterval,
       },
     });

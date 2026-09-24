@@ -98,6 +98,11 @@ enum LoanPaymentStatus {
   CANCELED // Pagamento estornado / cancelado
 }
 
+enum PurchasePaymentStatus {
+  CONFIRMED // Pagamento ativo e confirmado
+  CANCELED // Pagamento cancelado / estornado
+}
+
 enum ClosingStatus {
   OFFICIAL // Fechamento ativo e vigente
   SUPERSEDED // Substituído por uma reabertura posterior
@@ -228,18 +233,22 @@ model PurchaseItem {
 }
 
 model PurchasePayment {
-  id            String        @id @default(uuid())
-  purchaseId    String
-  amount        Decimal       @db.Decimal(12, 2) // Valor desembolsado no caixa
-  paymentDate   DateTime      @default(now())
-  paymentMethod PaymentMethod @default(PIX)
-  notes         String?
-  createdAt     DateTime      @default(now())
+  id                 String                @id @default(uuid())
+  purchaseId         String
+  amount             Decimal               @db.Decimal(12, 2) // Valor desembolsado no caixa
+  paymentDate        DateTime              @default(now())
+  paymentMethod      PaymentMethod         @default(PIX)
+  status             PurchasePaymentStatus @default(CONFIRMED)
+  cancellationReason String?
+  canceledAt         DateTime?
+  notes              String?
+  createdAt          DateTime              @default(now())
 
   purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
 
   @@index([purchaseId])
   @@index([paymentDate])
+  @@index([status])
   @@map("purchase_payments")
 }
 

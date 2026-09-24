@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { CancelPurchasePaymentDto } from './dto/cancel-purchase-payment.dto';
 import { CreatePurchasePaymentDto } from './dto/create-purchase-payment.dto';
 import { CreatePurchaseDto } from './dto/create-purchase.dto';
 import { PurchasesService } from './purchases.service';
@@ -15,6 +16,15 @@ export class PurchasesController {
   @Post(':id/payments')
   addPayment(@Param('id') id: string, @Body() dto: CreatePurchasePaymentDto) {
     return this.purchasesService.addPayment(id, dto);
+  }
+
+  @Post(':purchaseId/payments/:paymentId/cancel')
+  cancelPayment(
+    @Param('purchaseId') purchaseId: string,
+    @Param('paymentId') paymentId: string,
+    @Body() dto: CancelPurchasePaymentDto,
+  ) {
+    return this.purchasesService.cancelPayment(purchaseId, paymentId, dto);
   }
 
   @Get()
