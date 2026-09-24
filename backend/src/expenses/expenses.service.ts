@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { FinancialScope, FinancialStatus, FinancialType, Prisma } from '@prisma/client';
 import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CancelExpenseDto } from './dto/cancel-expense.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { QueryExpensesDto } from './dto/query-expenses.dto';
 import { UpdateExpenseDto } from './dto/update-expense.dto';
@@ -183,9 +184,66 @@ export class ExpensesService {
         throw new NotFoundException(`Despesa com ID "${id}" não foi encontrada.`);
       }
 
+      // 1. Regra para registro CANCELED: imutável e sem reativação
+      if (existing.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException('Não é permitido alterar uma despesa cancelada.');
+      }
+
+      // 2. Não permitir transicionar diretamente para CANCELED via PATCH (deve usar /cancel com justificativa)
+      if (dto.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException(
+          'Para cancelar uma despesa, utilize o endpoint dedicado POST /api/v1/expenses/:id/cancel informando o motivo.',
+        );
+      }
+
+      // 3. Regra para registro PAID (realizado): campos de desembolso financeiro são imutáveis
+      if (existing.status === FinancialStatus.PAID) {
+        if (dto.status === FinancialStatus.PENDING) {
+          throw new BadRequestException('Não é permitido reverter uma despesa paga (PAID) para pendente (PENDING).');
+        }
+
+        if (dto.amount !== undefined && !new Prisma.Decimal(dto.amount).equals(existing.amount)) {
+          throw new BadRequestException(
+            'Não é permitido alterar o valor de uma despesa já paga (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        if (
+          dto.paymentDate !== undefined &&
+          existing.paymentDate &&
+          new Date(dto.paymentDate).getTime() !== existing.paymentDate.getTime()
+        ) {
+          throw new BadRequestException(
+            'Não é permitido alterar a data de pagamento de uma despesa já paga (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        if (dto.financialCategoryId !== undefined && dto.financialCategoryId !== existing.financialCategoryId) {
+          throw new BadRequestException(
+            'Não é permitido alterar a categoria de uma despesa já paga (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        // Para alteração de campos não financeiros de despesa paga, valida que o período original do pagamento está aberto
+        if (existing.paymentDate) {
+          await this.periodLockService.lockAndAssertPeriodOpen(tx, existing.paymentDate);
+        }
+      }
+
+      // 4. Regra para registro PENDING: permite edição e transição para PAID exigindo paymentDate
+      if (existing.status === FinancialStatus.PENDING) {
+        if (dto.status === FinancialStatus.PAID) {
+          const resultingPaymentDate = dto.paymentDate ? new Date(dto.paymentDate) : null;
+          if (!resultingPaymentDate) {
+            throw new BadRequestException('Data de pagamento (paymentDate) é obrigatória para despesas com status PAID.');
+          }
+          await this.periodLockService.lockAndAssertPeriodOpen(tx, resultingPaymentDate);
+        }
+      }
+
       const updateData: Prisma.ExpenseUpdateInput = {};
 
-      if (dto.financialCategoryId) {
+      if (dto.financialCategoryId && existing.status !== FinancialStatus.PAID) {
         const category = await tx.financialCategory.findUnique({
           where: { id: dto.financialCategoryId },
         });
@@ -211,7 +269,7 @@ export class ExpensesService {
         updateData.description = dto.description.trim();
       }
 
-      if (dto.amount !== undefined) {
+      if (dto.amount !== undefined && existing.status !== FinancialStatus.PAID) {
         if (dto.amount <= 0) {
           throw new BadRequestException('O valor da despesa deve ser estritamente maior que zero.');
         }
@@ -230,51 +288,63 @@ export class ExpensesService {
         updateData.notes = dto.notes ? dto.notes.trim() : null;
       }
 
-      // Coherent resolution of status and paymentDate
-      const resultingStatus = dto.status ?? existing.status;
-      let resultingPaymentDate: Date | null;
-
-      if (dto.paymentDate !== undefined) {
-        resultingPaymentDate = dto.paymentDate ? new Date(dto.paymentDate) : null;
-      } else if (dto.status === FinancialStatus.PENDING) {
-        // Transitioning to PENDING clears payment date
-        resultingPaymentDate = null;
-      } else if (dto.status === FinancialStatus.CANCELED) {
-        resultingPaymentDate = null;
-      } else {
-        resultingPaymentDate = existing.paymentDate;
+      if (dto.status !== undefined) {
+        updateData.status = dto.status;
       }
 
-      if (resultingStatus === FinancialStatus.PAID && !resultingPaymentDate) {
-        throw new BadRequestException('Data de pagamento (paymentDate) é obrigatória para despesas com status PAID.');
+      if (dto.paymentDate !== undefined && existing.status !== FinancialStatus.PAID) {
+        updateData.paymentDate = dto.paymentDate ? new Date(dto.paymentDate) : null;
       }
-
-      if (resultingStatus === FinancialStatus.PENDING && resultingPaymentDate && dto.paymentDate) {
-        throw new BadRequestException('Despesa com status PENDING não deve ter data de pagamento (paymentDate).');
-      }
-
-      // Regra de Period Lock para Expenses:
-      // Apenas pagamentos efetivados (status = PAID) afetam o fechamento mensal (DRE/DFC).
-      // Se a despesa era PAID, o período original deve estar aberto para permitir estorno/alteração.
-      // Se a despesa resultará em PAID, o período de pagamento destino deve estar aberto.
-      const affectedDates: (Date | null)[] = [];
-      if (existing.status === FinancialStatus.PAID && existing.paymentDate) {
-        affectedDates.push(existing.paymentDate);
-      }
-      if (resultingStatus === FinancialStatus.PAID && resultingPaymentDate) {
-        affectedDates.push(resultingPaymentDate);
-      }
-
-      if (affectedDates.length > 0) {
-        await this.periodLockService.lockAndAssertAllPeriodsOpen(tx, affectedDates);
-      }
-
-      updateData.status = resultingStatus;
-      updateData.paymentDate = resultingStatus === FinancialStatus.PAID ? resultingPaymentDate : null;
 
       return tx.expense.update({
         where: { id },
         data: updateData,
+        include: {
+          category: true,
+        },
+      });
+    });
+  }
+
+  async cancel(id: string, dto: CancelExpenseDto) {
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('O motivo do cancelamento é obrigatório.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM expenses WHERE id = ${id} FOR UPDATE`;
+
+      const existing = await tx.expense.findUnique({
+        where: { id },
+        include: {
+          category: true,
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Despesa com ID "${id}" não foi encontrada.`);
+      }
+
+      if (existing.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException('Esta despesa já se encontra cancelada.');
+      }
+
+      // Regra de Period Lock:
+      // Se a despesa era PAID, ela impactou o caixa/DRE na competência do paymentDate original;
+      // portanto, o estorno exige que o paymentDate original esteja aberto.
+      // Se a despesa era PENDING, trata-se de cancelamento de previsão/compromisso não realizado;
+      // logo, não afeta períodos contábeis fechados.
+      if (existing.status === FinancialStatus.PAID && existing.paymentDate) {
+        await this.periodLockService.lockAndAssertPeriodOpen(tx, existing.paymentDate);
+      }
+
+      return tx.expense.update({
+        where: { id },
+        data: {
+          status: FinancialStatus.CANCELED,
+          canceledAt: new Date(),
+          cancellationReason: dto.reason.trim(),
+        },
         include: {
           category: true,
         },

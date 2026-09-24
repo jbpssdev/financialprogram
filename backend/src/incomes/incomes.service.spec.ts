@@ -198,30 +198,169 @@ describe('IncomesService', () => {
     expect(result.summary.totalPersonal).toBe('150.00'); // 150 (paid)
   });
 
-  it('should update Income correctly', async () => {
-    prisma.income.findUnique.mockResolvedValue({
-      id: 'inc-1',
-      description: 'Original',
-      amount: new Prisma.Decimal(100),
-      status: FinancialStatus.PENDING,
+  describe('Auditoria e Mutabilidade de Income (Requisitos A a J)', () => {
+    // A. PENDING pode alterar amount
+    it('A. PENDING pode alterar amount', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-p1',
+        amount: new Prisma.Decimal(100),
+        status: FinancialStatus.PENDING,
+        incomeDate: new Date('2026-09-10'),
+      });
+      prisma.income.update.mockResolvedValue({
+        id: 'inc-p1',
+        amount: new Prisma.Decimal(250),
+        status: FinancialStatus.PENDING,
+      });
+
+      const result = await service.update('inc-p1', { amount: 250 });
+      expect(result.amount).toEqual(new Prisma.Decimal(250));
     });
 
-    prisma.income.update.mockResolvedValue({
-      id: 'inc-1',
-      description: 'Atualizada',
-      amount: new Prisma.Decimal(150),
-      status: FinancialStatus.PAID,
-      category: { name: 'Renda' },
+    // B. PENDING -> PAID funciona
+    it('B. PENDING -> PAID funciona', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-p2',
+        amount: new Prisma.Decimal(300),
+        status: FinancialStatus.PENDING,
+        incomeDate: new Date('2026-09-10'),
+      });
+      prisma.income.update.mockResolvedValue({
+        id: 'inc-p2',
+        amount: new Prisma.Decimal(300),
+        status: FinancialStatus.PAID,
+      });
+
+      const result = await service.update('inc-p2', { status: FinancialStatus.PAID });
+      expect(result.status).toBe(FinancialStatus.PAID);
     });
 
-    const result = await service.update('inc-1', {
-      description: 'Atualizada',
-      amount: 150,
-      status: FinancialStatus.PAID,
+    // C. PAID não pode alterar amount
+    it('C. PAID não pode alterar amount', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-paid1',
+        amount: new Prisma.Decimal(500),
+        status: FinancialStatus.PAID,
+        incomeDate: new Date('2026-09-10'),
+      });
+
+      await expect(service.update('inc-paid1', { amount: 600 })).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
-    expect(result.description).toBe('Atualizada');
-    expect(result.status).toBe(FinancialStatus.PAID);
+    // D. PAID não pode alterar incomeDate
+    it('D. PAID não pode alterar incomeDate', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-paid2',
+        amount: new Prisma.Decimal(500),
+        status: FinancialStatus.PAID,
+        incomeDate: new Date('2026-09-10T00:00:00.000Z'),
+      });
+
+      await expect(service.update('inc-paid2', { incomeDate: '2026-09-20T00:00:00.000Z' })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    // E. PAID não pode alterar financialCategoryId
+    it('E. PAID não pode alterar financialCategoryId', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-paid3',
+        amount: new Prisma.Decimal(500),
+        financialCategoryId: 'cat-1',
+        status: FinancialStatus.PAID,
+        incomeDate: new Date('2026-09-10'),
+      });
+
+      await expect(service.update('inc-paid3', { financialCategoryId: 'cat-2' })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    // F. PAID pode ser cancelado via endpoint
+    it('F. PAID pode ser cancelado via endpoint', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-paid4',
+        amount: new Prisma.Decimal(500),
+        status: FinancialStatus.PAID,
+        incomeDate: new Date('2026-09-10'),
+      });
+      prisma.income.update.mockResolvedValue({
+        id: 'inc-paid4',
+        status: FinancialStatus.CANCELED,
+        cancellationReason: 'Lançamento duplicado',
+        canceledAt: new Date(),
+      });
+
+      const result = await service.cancel('inc-paid4', { reason: 'Lançamento duplicado' });
+      expect(result.status).toBe(FinancialStatus.CANCELED);
+      expect(result.cancellationReason).toBe('Lançamento duplicado');
+    });
+
+    // G. CANCELED mantém dados originais e motivo
+    it('G. CANCELED mantém dados originais e motivo', async () => {
+      const now = new Date();
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-canc',
+        amount: new Prisma.Decimal(700),
+        status: FinancialStatus.CANCELED,
+        cancellationReason: 'Erro operacional',
+        canceledAt: now,
+      });
+
+      const result = await service.findOne('inc-canc');
+      expect(result.amount).toEqual(new Prisma.Decimal(700));
+      expect(result.status).toBe(FinancialStatus.CANCELED);
+      expect(result.cancellationReason).toBe('Erro operacional');
+      expect(result.canceledAt).toEqual(now);
+    });
+
+    // H. CANCELED não pode ser reativado
+    it('H. CANCELED não pode ser reativado', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-canc2',
+        amount: new Prisma.Decimal(700),
+        status: FinancialStatus.CANCELED,
+      });
+
+      await expect(service.update('inc-canc2', { status: FinancialStatus.PAID })).rejects.toThrow(
+        BadRequestException,
+      );
+      await expect(service.update('inc-canc2', { status: FinancialStatus.PENDING })).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    // I. Duplo cancelamento bloqueado
+    it('I. Duplo cancelamento bloqueado', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-canc3',
+        status: FinancialStatus.CANCELED,
+      });
+
+      await expect(
+        service.cancel('inc-canc3', { reason: 'Tentativa de cancelar novamente' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    // J. Cancelamento em período fechado bloqueado com 422
+    it('J. Cancelamento em período fechado bloqueado com 422', async () => {
+      prisma.income.findUnique.mockResolvedValue({
+        id: 'inc-locked-cancel',
+        incomeDate: new Date('2026-09-05T10:00:00.000Z'),
+        amount: new Prisma.Decimal(200),
+        status: FinancialStatus.PAID,
+      });
+
+      periodLockService.lockAndAssertPeriodOpen.mockRejectedValueOnce(
+        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
+      );
+
+      await expect(
+        service.cancel('inc-locked-cancel', { reason: 'Estorno fora do período' }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
   });
 
   describe('Period Lock Enforcement', () => {
@@ -243,25 +382,6 @@ describe('IncomesService', () => {
           description: 'Receita em mês fechado',
           amount: 500,
           incomeDate: '2026-09-10T12:00:00.000Z',
-        }),
-      ).rejects.toThrow(UnprocessableEntityException);
-    });
-
-    it('Bloqueia alteração/cancelamento de receita com HTTP 422 em mês fechado', async () => {
-      prisma.income.findUnique.mockResolvedValue({
-        id: 'inc-locked',
-        incomeDate: new Date('2026-09-05T10:00:00.000Z'),
-        amount: new Prisma.Decimal(200),
-        status: FinancialStatus.PAID,
-      });
-
-      periodLockService.lockAndAssertAllPeriodsOpen.mockRejectedValueOnce(
-        new UnprocessableEntityException('Período 2026-09 está fechado. Reabra o mês antes de realizar alterações.'),
-      );
-
-      await expect(
-        service.update('inc-locked', {
-          status: FinancialStatus.CANCELED,
         }),
       ).rejects.toThrow(UnprocessableEntityException);
     });

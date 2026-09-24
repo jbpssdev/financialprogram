@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { FinancialScope, FinancialStatus, FinancialType, Prisma } from '@prisma/client';
 import { PeriodLockService } from '../monthly-closings/period-lock.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CancelIncomeDto } from './dto/cancel-income.dto';
 import { CreateIncomeDto } from './dto/create-income.dto';
 import { QueryIncomesDto } from './dto/query-incomes.dto';
 import { UpdateIncomeDto } from './dto/update-income.dto';
@@ -159,12 +160,58 @@ export class IncomesService {
         throw new NotFoundException(`Receita com ID "${id}" não foi encontrada.`);
       }
 
-      const targetDate = dto.incomeDate ? new Date(dto.incomeDate) : undefined;
-      await this.periodLockService.lockAndAssertAllPeriodsOpen(tx, [existing.incomeDate, targetDate]);
+      // 1. Regra para registro CANCELED: imutável e sem reativação
+      if (existing.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException('Não é permitido alterar uma receita cancelada.');
+      }
+
+      // 2. Não permitir transicionar diretamente para CANCELED via PATCH (deve usar /cancel com justificativa)
+      if (dto.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException(
+          'Para cancelar uma receita, utilize o endpoint dedicado POST /api/v1/incomes/:id/cancel informando o motivo.',
+        );
+      }
+
+      // 3. Regra para registro PAID (realizado): campos financeiros são imutáveis
+      if (existing.status === FinancialStatus.PAID) {
+        if (dto.status === FinancialStatus.PENDING) {
+          throw new BadRequestException('Não é permitido reverter uma receita realizada (PAID) para pendente (PENDING).');
+        }
+
+        if (dto.amount !== undefined && !new Prisma.Decimal(dto.amount).equals(existing.amount)) {
+          throw new BadRequestException(
+            'Não é permitido alterar o valor de uma receita já realizada (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        if (dto.incomeDate !== undefined && new Date(dto.incomeDate).getTime() !== existing.incomeDate.getTime()) {
+          throw new BadRequestException(
+            'Não é permitido alterar a data de uma receita já realizada (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        if (dto.financialCategoryId !== undefined && dto.financialCategoryId !== existing.financialCategoryId) {
+          throw new BadRequestException(
+            'Não é permitido alterar a categoria de uma receita já realizada (PAID). Cancele o lançamento e registre um novo.',
+          );
+        }
+
+        // Para alteração de campos não financeiros de receita realizada em período fechado,
+        // valida que o período original está aberto
+        await this.periodLockService.lockAndAssertPeriodOpen(tx, existing.incomeDate);
+      }
+
+      // 4. Regra para registro PENDING: permite edição e transição para PAID
+      if (existing.status === FinancialStatus.PENDING) {
+        if (dto.status === FinancialStatus.PAID) {
+          const resultingDate = dto.incomeDate ? new Date(dto.incomeDate) : existing.incomeDate;
+          await this.periodLockService.lockAndAssertPeriodOpen(tx, resultingDate);
+        }
+      }
 
       const updateData: Prisma.IncomeUpdateInput = {};
 
-      if (dto.financialCategoryId) {
+      if (dto.financialCategoryId && existing.status !== FinancialStatus.PAID) {
         const category = await tx.financialCategory.findUnique({
           where: { id: dto.financialCategoryId },
         });
@@ -190,7 +237,7 @@ export class IncomesService {
         updateData.description = dto.description.trim();
       }
 
-      if (dto.amount !== undefined) {
+      if (dto.amount !== undefined && existing.status !== FinancialStatus.PAID) {
         if (dto.amount <= 0) {
           throw new BadRequestException('O valor da receita deve ser estritamente maior que zero.');
         }
@@ -201,7 +248,7 @@ export class IncomesService {
         updateData.status = dto.status;
       }
 
-      if (dto.incomeDate !== undefined) {
+      if (dto.incomeDate !== undefined && existing.status !== FinancialStatus.PAID) {
         updateData.incomeDate = new Date(dto.incomeDate);
       }
 
@@ -212,6 +259,46 @@ export class IncomesService {
       return tx.income.update({
         where: { id },
         data: updateData,
+        include: {
+          category: true,
+        },
+      });
+    });
+  }
+
+  async cancel(id: string, dto: CancelIncomeDto) {
+    if (!dto.reason || !dto.reason.trim()) {
+      throw new BadRequestException('O motivo do cancelamento é obrigatório.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM incomes WHERE id = ${id} FOR UPDATE`;
+
+      const existing = await tx.income.findUnique({
+        where: { id },
+        include: {
+          category: true,
+        },
+      });
+
+      if (!existing) {
+        throw new NotFoundException(`Receita com ID "${id}" não foi encontrada.`);
+      }
+
+      if (existing.status === FinancialStatus.CANCELED) {
+        throw new BadRequestException('Esta receita já se encontra cancelada.');
+      }
+
+      // Proteger o período contábil do incomeDate original
+      await this.periodLockService.lockAndAssertPeriodOpen(tx, existing.incomeDate);
+
+      return tx.income.update({
+        where: { id },
+        data: {
+          status: FinancialStatus.CANCELED,
+          canceledAt: new Date(),
+          cancellationReason: dto.reason.trim(),
+        },
         include: {
           category: true,
         },
