@@ -173,3 +173,104 @@ export function createDummyDebt(overrides: Partial<DashboardDebtResponse> = {}):
     ...overrides,
   };
 }
+
+export function createDummyCashFlowSeries(): import('./dashboard.models').DashboardCashFlowPoint[] {
+  return [
+    {
+      referenceMonth: '2026-04',
+      isClosed: true,
+      inflows: '12000.00',
+      outflows: '9000.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-05',
+      isClosed: true,
+      inflows: '14000.00',
+      outflows: '11000.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-06',
+      isClosed: true,
+      inflows: '13500.00',
+      outflows: '10500.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-07',
+      isClosed: true,
+      inflows: '15000.00',
+      outflows: '12000.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-08',
+      isClosed: true,
+      inflows: '16000.00',
+      outflows: '13000.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-09',
+      isClosed: false,
+      inflows: '14500.00',
+      outflows: '10800.00',
+      netCashFlow: '3700.00',
+    },
+  ];
+}
+
+export function createDummyTrendsSeries(): import('./dashboard.models').DashboardTrendsPoint[] {
+  return [
+    {
+      referenceMonth: '2026-04',
+      isClosed: true,
+      grossRevenue: '13000.00',
+      grossProfit: '7800.00',
+      operatingResult: '5200.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-05',
+      isClosed: true,
+      grossRevenue: '14000.00',
+      grossProfit: '8400.00',
+      operatingResult: '5600.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-06',
+      isClosed: true,
+      grossRevenue: '13800.00',
+      grossProfit: '8200.00',
+      operatingResult: '5400.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-07',
+      isClosed: true,
+      grossRevenue: '15200.00',
+      grossProfit: '9100.00',
+      operatingResult: '6100.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-08',
+      isClosed: true,
+      grossRevenue: '16500.00',
+      grossProfit: '9900.00',
+      operatingResult: '6800.00',
+      netCashFlow: '3000.00',
+    },
+    {
+      referenceMonth: '2026-09',
+      isClosed: false,
+      grossRevenue: '15000.00',
+      grossProfit: '9000.00',
+      operatingResult: '6300.00',
+      netCashFlow: '3700.00',
+    },
+  ];
+}
+

@@ -148,3 +148,24 @@ export interface DashboardDebtResponse {
   upcomingInstallments: DashboardDebtInstallment[];
   activeLoans: DashboardActiveLoan[];
 }
+
+export interface DashboardCashFlowPoint {
+  referenceMonth: string;
+  isClosed: boolean;
+  inflows: string;
+  outflows: string;
+  netCashFlow: string;
+}
+
+export type DashboardCashFlowResponse = DashboardCashFlowPoint[];
+
+export interface DashboardTrendsPoint {
+  referenceMonth: string;
+  isClosed: boolean;
+  grossRevenue: string;
+  grossProfit: string;
+  operatingResult: string;
+  netCashFlow: string;
+}
+
+export type DashboardTrendsResponse = DashboardTrendsPoint[];

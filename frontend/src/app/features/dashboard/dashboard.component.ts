@@ -23,6 +23,7 @@ import { CashSummaryComponent } from './components/cash-summary/cash-summary.com
 import { DashboardKpisComponent } from './components/dashboard-kpis/dashboard-kpis.component';
 import { DebtOverviewComponent } from './components/debt-overview/debt-overview.component';
 import { EconomicSummaryComponent } from './components/economic-summary/economic-summary.component';
+import { HistorySectionComponent } from './components/history-section/history-section.component';
 import { InventoryOverviewComponent } from './components/inventory-overview/inventory-overview.component';
 import { SalesOverviewComponent } from './components/sales-overview/sales-overview.component';
 import { DashboardStore } from './dashboard.store';
@@ -41,6 +42,7 @@ import { DashboardStore } from './dashboard.store';
     HlmSkeleton,
     NgIcon,
     DashboardKpisComponent,
+    HistorySectionComponent,
     EconomicSummaryComponent,
     CashSummaryComponent,
     SalesOverviewComponent,
@@ -212,6 +214,19 @@ import { DashboardStore } from './dashboard.store';
         <app-dashboard-kpis [summary]="summary" />
 
         <!-- ============================================================ -->
+        <!-- HISTORICAL EVOLUTION & CHARTS                                 -->
+        <!-- ============================================================ -->
+        <app-history-section
+          [cashFlowSeries]="store.cashFlowSeries()"
+          [trendsSeries]="store.trendsSeries()"
+          [selectedMonths]="store.historyMonths()"
+          [loading]="store.historyLoading()"
+          [error]="store.historyError()"
+          (horizonChange)="onHorizonChange($event)"
+          (retry)="store.retryHistory()"
+        />
+
+        <!-- ============================================================ -->
         <!-- ECONOMIC & CASH FLOW DEMONSTRATIVES                           -->
         <!-- ============================================================ -->
         <section class="grid grid-cols-1 lg:grid-cols-2 gap-6" aria-labelledby="breakdown-heading">
@@ -270,6 +285,10 @@ export class DashboardComponent implements OnInit {
     this.store.loadAll();
   }
 
+  onHorizonChange(months: number): void {
+    this.store.setHistoryMonths(months);
+  }
+
   onMonthChange(newMonth: string | number): void {
     const month = typeof newMonth === 'string' ? parseInt(newMonth, 10) : newMonth;
     this.store.setPeriod(this.store.selectedYear(), month);
@@ -280,3 +299,4 @@ export class DashboardComponent implements OnInit {
     this.store.setPeriod(year, this.store.selectedMonth());
   }
 }
+

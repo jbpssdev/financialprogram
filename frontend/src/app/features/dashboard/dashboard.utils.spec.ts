@@ -1,8 +1,12 @@
 import {
+  formatAxisCurrency,
   formatCurrency,
   formatDateOnly,
   formatPercentageChange,
   formatQuantity,
+  formatReferenceMonth,
+  isCashFlowSeriesEmpty,
+  isTrendsSeriesEmpty,
 } from './dashboard.utils';
 
 describe('dashboard.utils', () => {
@@ -79,4 +83,71 @@ describe('dashboard.utils', () => {
       expect(formatDateOnly(undefined)).toBe('');
     });
   });
+
+  describe('formatReferenceMonth', () => {
+    it('should format YYYY-MM into Mês/AA in pt-BR', () => {
+      expect(formatReferenceMonth('2026-01')).toBe('Jan/26');
+      expect(formatReferenceMonth('2026-04')).toBe('Abr/26');
+      expect(formatReferenceMonth('2026-09')).toBe('Set/26');
+      expect(formatReferenceMonth('2026-12')).toBe('Dez/26');
+    });
+
+    it('should return empty string for null or undefined', () => {
+      expect(formatReferenceMonth(null)).toBe('');
+      expect(formatReferenceMonth(undefined)).toBe('');
+    });
+  });
+
+  describe('formatAxisCurrency', () => {
+    it('should format millions with mi suffix', () => {
+      expect(formatAxisCurrency(1500000)).toBe('R$ 1,5 mi');
+      expect(formatAxisCurrency(2000000)).toBe('R$ 2 mi');
+      expect(formatAxisCurrency(-1200000)).toBe('-R$ 1,2 mi');
+    });
+
+    it('should format thousands with mil suffix', () => {
+      expect(formatAxisCurrency(10000)).toBe('R$ 10 mil');
+      expect(formatAxisCurrency(25000)).toBe('R$ 25 mil');
+      expect(formatAxisCurrency(-5000)).toBe('-R$ 5 mil');
+    });
+
+    it('should format small numbers directly and handle 0', () => {
+      expect(formatAxisCurrency(0)).toBe('R$ 0');
+      expect(formatAxisCurrency(500)).toBe('R$ 500');
+    });
+  });
+
+  describe('isCashFlowSeriesEmpty & isTrendsSeriesEmpty', () => {
+    it('should identify empty cash flow series', () => {
+      expect(isCashFlowSeriesEmpty(null)).toBe(true);
+      expect(isCashFlowSeriesEmpty([])).toBe(true);
+      expect(
+        isCashFlowSeriesEmpty([
+          { inflows: '0.00', outflows: '0.00', netCashFlow: '0.00' },
+          { inflows: '0', outflows: '0', netCashFlow: '0' },
+        ]),
+      ).toBe(true);
+      expect(
+        isCashFlowSeriesEmpty([
+          { inflows: '100.00', outflows: '0.00', netCashFlow: '100.00' },
+        ]),
+      ).toBe(false);
+    });
+
+    it('should identify empty trends series', () => {
+      expect(isTrendsSeriesEmpty(null)).toBe(true);
+      expect(isTrendsSeriesEmpty([])).toBe(true);
+      expect(
+        isTrendsSeriesEmpty([
+          { grossRevenue: '0.00', grossProfit: '0.00', operatingResult: '0.00', netCashFlow: '0.00' },
+        ]),
+      ).toBe(true);
+      expect(
+        isTrendsSeriesEmpty([
+          { grossRevenue: '500.00', grossProfit: '0.00', operatingResult: '0.00', netCashFlow: '0.00' },
+        ]),
+      ).toBe(false);
+    });
+  });
 });
+

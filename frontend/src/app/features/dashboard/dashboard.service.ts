@@ -3,10 +3,12 @@ import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { API_BASE_URL } from '../../core/config/api.config';
 import {
+  DashboardCashFlowPoint,
   DashboardDebtResponse,
   DashboardInventoryResponse,
   DashboardSalesResponse,
   DashboardSummaryResponse,
+  DashboardTrendsPoint,
 } from './dashboard.models';
 
 @Injectable({
@@ -47,4 +49,33 @@ export class DashboardService {
   getDebt(): Observable<DashboardDebtResponse> {
     return this.http.get<DashboardDebtResponse>(`${this.apiBaseUrl}/dashboard/debt`);
   }
+
+  getCashFlow(months: number = 6, year?: number, month?: number): Observable<DashboardCashFlowPoint[]> {
+    let params = new HttpParams().set('months', months.toString());
+    if (year !== undefined && year !== null) {
+      params = params.set('year', year.toString());
+    }
+    if (month !== undefined && month !== null) {
+      params = params.set('month', month.toString());
+    }
+
+    return this.http.get<DashboardCashFlowPoint[]>(`${this.apiBaseUrl}/dashboard/cash-flow`, {
+      params,
+    });
+  }
+
+  getTrends(months: number = 6, year?: number, month?: number): Observable<DashboardTrendsPoint[]> {
+    let params = new HttpParams().set('months', months.toString());
+    if (year !== undefined && year !== null) {
+      params = params.set('year', year.toString());
+    }
+    if (month !== undefined && month !== null) {
+      params = params.set('month', month.toString());
+    }
+
+    return this.http.get<DashboardTrendsPoint[]>(`${this.apiBaseUrl}/dashboard/trends`, {
+      params,
+    });
+  }
 }
+

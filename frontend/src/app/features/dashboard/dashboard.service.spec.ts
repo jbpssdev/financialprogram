@@ -66,4 +66,37 @@ describe('DashboardService', () => {
     expect(req.request.method).toBe('GET');
     req.flush({});
   });
+
+  it('should request cash-flow with months, year, and month params', () => {
+    service.getCashFlow(12, 2026, 3).subscribe();
+
+    const req = httpMock.expectOne(`${baseUrl}/dashboard/cash-flow?months=12&year=2026&month=3`);
+    expect(req.request.method).toBe('GET');
+    req.flush([]);
+  });
+
+  it('should request cash-flow with default months when no params provided', () => {
+    service.getCashFlow().subscribe();
+
+    const req = httpMock.expectOne(`${baseUrl}/dashboard/cash-flow?months=6`);
+    expect(req.request.method).toBe('GET');
+    req.flush([]);
+  });
+
+  it('should request trends with months, year, and month params', () => {
+    service.getTrends(24, 2026, 9).subscribe();
+
+    const req = httpMock.expectOne(`${baseUrl}/dashboard/trends?months=24&year=2026&month=9`);
+    expect(req.request.method).toBe('GET');
+    req.flush([]);
+  });
+
+  it('should request trends with default months when no params provided', () => {
+    service.getTrends().subscribe();
+
+    const req = httpMock.expectOne(`${baseUrl}/dashboard/trends?months=6`);
+    expect(req.request.method).toBe('GET');
+    req.flush([]);
+  });
 });
+

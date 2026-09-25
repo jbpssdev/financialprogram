@@ -38,7 +38,15 @@ describe('DashboardComponent', () => {
     periodLoading: ReturnType<typeof signal<boolean>>;
     error: ReturnType<typeof signal<string | null>>;
     initialized: ReturnType<typeof signal<boolean>>;
+    cashFlowSeries: ReturnType<typeof signal<any>>;
+    trendsSeries: ReturnType<typeof signal<any>>;
+    historyMonths: ReturnType<typeof signal<number>>;
+    historyLoading: ReturnType<typeof signal<boolean>>;
+    historyError: ReturnType<typeof signal<string | null>>;
     loadAll: ReturnType<typeof vi.fn>;
+    loadHistory: ReturnType<typeof vi.fn>;
+    setHistoryMonths: ReturnType<typeof vi.fn>;
+    retryHistory: ReturnType<typeof vi.fn>;
     setPeriod: ReturnType<typeof vi.fn>;
     retry: ReturnType<typeof vi.fn>;
   };
@@ -60,7 +68,15 @@ describe('DashboardComponent', () => {
       periodLoading: signal<boolean>(false),
       error: signal<string | null>(null),
       initialized: signal<boolean>(false),
+      cashFlowSeries: signal<any>(null),
+      trendsSeries: signal<any>(null),
+      historyMonths: signal<number>(6),
+      historyLoading: signal<boolean>(false),
+      historyError: signal<string | null>(null),
       loadAll: vi.fn(),
+      loadHistory: vi.fn(),
+      setHistoryMonths: vi.fn(),
+      retryHistory: vi.fn(),
       setPeriod: vi.fn(),
       retry: vi.fn(),
     };
@@ -124,6 +140,7 @@ describe('DashboardComponent', () => {
 
     // Check presentation components presence
     expect(fixture.nativeElement.querySelector('app-dashboard-kpis')).toBeTruthy();
+    expect(fixture.nativeElement.querySelector('app-history-section')).toBeTruthy();
     expect(fixture.nativeElement.querySelector('app-economic-summary')).toBeTruthy();
     expect(fixture.nativeElement.querySelector('app-cash-summary')).toBeTruthy();
     expect(fixture.nativeElement.querySelector('app-sales-overview')).toBeTruthy();
