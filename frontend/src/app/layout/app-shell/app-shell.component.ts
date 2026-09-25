@@ -37,6 +37,7 @@ import {
 } from '@ng-icons/lucide';
 import { HlmButton } from '@spartan-ng/helm/button';
 import { HlmSheetImports } from '@spartan-ng/helm/sheet';
+import { HlmToaster } from '../../shared/ui/sonner/src';
 import { filter } from 'rxjs/operators';
 import { AuthStore } from '../../core/auth';
 import { APP_NAVIGATION, NavItem } from './app-navigation';
@@ -52,6 +53,7 @@ import { APP_NAVIGATION, NavItem } from './app-navigation';
     RouterLinkActive,
     HlmButton,
     HlmSheetImports,
+    HlmToaster,
     NgIcon,
   ],
   providers: [
@@ -349,11 +351,15 @@ import { APP_NAVIGATION, NavItem } from './app-navigation';
       <!-- ============================================================ -->
       <!-- MAIN CONTENT VIEWPORT                                         -->
       <!-- ============================================================ -->
-      <main class="flex-1 md:pl-64 w-full">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main class="flex-1 md:pl-64 w-full min-w-0">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 min-w-0">
           <router-outlet />
         </div>
       </main>
+
+
+      <!-- Authenticated Global Feedback Toast -->
+      <hlm-toaster position="top-right" richColors />
     </div>
   `,
 })

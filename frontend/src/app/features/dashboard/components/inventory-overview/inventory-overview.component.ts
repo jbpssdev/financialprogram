@@ -4,7 +4,7 @@ import { NgIcon, provideIcons } from '@ng-icons/core';
 import { lucidePackage } from '@ng-icons/lucide';
 import { HlmCardImports } from '@spartan-ng/helm/card';
 import { DashboardInventoryResponse } from '../../dashboard.models';
-import { formatCurrency, formatQuantity } from '../../dashboard.utils';
+import { formatCurrency, formatAverageCost, formatQuantity } from '../../dashboard.utils';
 
 @Component({
   selector: 'app-inventory-overview',
@@ -48,7 +48,7 @@ import { formatCurrency, formatQuantity } from '../../dashboard.utils';
               <div class="flex items-center justify-between p-2 rounded bg-muted/30 text-xs">
                 <div>
                   <span class="font-medium text-foreground block">{{ item.name }}</span>
-                  <span class="text-[11px] text-muted-foreground">Custo Médio: {{ formatCurrency(item.averageCost) }}</span>
+                  <span class="text-[11px] text-muted-foreground">Custo Médio: {{ formatAverageCost(item.averageCost) }}</span>
                 </div>
                 <span
                   class="font-mono font-semibold"
@@ -75,5 +75,6 @@ export class InventoryOverviewComponent {
   readonly inventory = input.required<DashboardInventoryResponse>();
 
   protected readonly formatCurrency = formatCurrency;
+  protected readonly formatAverageCost = formatAverageCost;
   protected readonly formatQuantity = formatQuantity;
 }
